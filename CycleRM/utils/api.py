@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import datetime
+import secrets
 import typing
 from collections import defaultdict
 
@@ -65,8 +66,8 @@ class Identification(BaseModel):
 async def validate_authorization(bot: Bot, token: str, disable_static_tokens=False):
     # Check static and dynamic tokens
     if not disable_static_tokens:
-        static_token = config("API_STATIC_TOKEN")
-        if token == static_token:
+        static_token = config("API_STATIC_TOKEN", default="")
+        if static_token and secrets.compare_digest(token, static_token):
             return True
     token_obj = await bot.api_tokens.db.find_one({"token": token})
     if token_obj:
@@ -76,6 +77,13 @@ async def validate_authorization(bot: Bot, token: str, disable_static_tokens=Fal
             return False
     else:
         return False
+
+
+async def require_api_authorization(bot: Bot, authorization: str | None) -> None:
+    if not authorization:
+        raise HTTPException(status_code=401, detail="Invalid authorization")
+    if not await validate_authorization(bot, authorization):
+        raise HTTPException(status_code=401, detail="Invalid or expired authorization.")
 
 
 class APIRoutes:
@@ -93,10 +101,16 @@ class APIRoutes:
                     methods=[i.split("_")[0].upper()],
                 )
 
-    def GET_status(self):
+    async def GET_status(self, authorization: Annotated[str | None, Header()] = None):
+        await require_api_authorization(self.bot, authorization)
         return {"guilds": len(self.bot.guilds), "ping": round(self.bot.latency * 1000)}
 
-    async def POST_get_mutual_guilds(self, request: Request):
+    async def POST_get_mutual_guilds(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         json_data = await request.json()
         guild_ids = json_data.get("guilds")
         if not guild_ids:
@@ -819,7 +833,12 @@ class APIRoutes:
         )
         return {"message": "Successfully logged!"}
 
-    async def POST_get_staff_guilds(self, request: Request):
+    async def POST_get_staff_guilds(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         json_data = await request.json()
         guild_ids = json_data.get("guilds")
         user_id = json_data.get("user")
@@ -902,7 +921,12 @@ class APIRoutes:
         guilds = [x for x in all_results if x is not None and not isinstance(x, Exception)]
         return guilds
 
-    async def POST_check_staff_level(self, request: Request):
+    async def POST_check_staff_level(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         json_data = await request.json()
         guild_id = json_data.get("guild")
         user_id = json_data.get("user")
@@ -937,7 +961,12 @@ class APIRoutes:
 
         return {"permission_level": permission_level}
 
-    async def POST_get_guild_settings(self, request: Request):
+    async def POST_get_guild_settings(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         json_data = await request.json()
         guild_id = json_data.get("guild")
         if not guild_id:
@@ -949,7 +978,12 @@ class APIRoutes:
 
         return settings
 
-    async def POST_update_guild_settings(self, request: Request):
+    async def POST_update_guild_settings(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         json_data = await request.json()
         guild_id = json_data.get("guild")
 
@@ -975,7 +1009,12 @@ class APIRoutes:
 
         return settings
 
-    async def POST_get_guild_roles(self, request: Request):
+    async def POST_get_guild_roles(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         json_data = await request.json()
         guild_id = json_data.get("guild")
 
@@ -988,7 +1027,12 @@ class APIRoutes:
             for role in guild.roles
         ]
 
-    async def POST_get_guild_channels(self, request: Request):
+    async def POST_get_guild_channels(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         json_data = await request.json()
         guild_id = json_data.get("guild")
 
@@ -1122,7 +1166,12 @@ class APIRoutes:
 
         return token_obj
 
-    async def GET_get_current_token(self, request: Request):
+    async def GET_get_current_token(
+        self,
+        authorization: Annotated[str | None, Header()],
+        request: Request,
+    ):
+        await require_api_authorization(self.bot, authorization)
         """
         Given the client host IP, returns a dictionary with information about the token.
 
@@ -1584,6 +1633,8 @@ class APIRoutes:
     async def POST_issue_infraction(
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
+        raise HTTPException(status_code=410, detail="Staff infractions module removed")
+
         if not authorization:
             raise HTTPException(status_code=401, detail="Invalid authorization")
 
@@ -1715,6 +1766,8 @@ class APIRoutes:
     async def POST_revoke_infraction(
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
+        raise HTTPException(status_code=410, detail="Staff infractions module removed")
+
         if not authorization:
             raise HTTPException(status_code=401, detail="Invalid authorization")
 
@@ -1768,6 +1821,8 @@ class APIRoutes:
     async def POST_get_infraction_wave_preview(
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
+        raise HTTPException(status_code=410, detail="Staff infractions module removed")
+
         if not authorization:
             raise HTTPException(status_code=401, detail="Invalid authorization")
 
@@ -1901,6 +1956,8 @@ class APIRoutes:
     async def POST_start_infraction_wave(
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
+        raise HTTPException(status_code=410, detail="Staff infractions module removed")
+
         if not authorization:
             raise HTTPException(status_code=401, detail="Invalid authorization")
 
@@ -2112,7 +2169,10 @@ class ServerAPI(commands.Cog):
             api.add_middleware(BaseHTTPMiddleware, dispatch=middleware)
             api.include_router(APIRoutes(self.bot).router)
             self.config = uvicorn.Config(
-                "utils.api:api", port=int(config("BIND_PORT", default=5000)), log_level="debug", host="0.0.0.0"
+                "utils.api:api",
+                port=int(config("BIND_PORT", default=5000)),
+                log_level="debug",
+                host=config("BIND_HOST", default="127.0.0.1"),
             )
             self.server = uvicorn.Server(self.config)
             await self.server.serve()

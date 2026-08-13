@@ -161,7 +161,7 @@ class Warnings(Document):
         }
         """
         if all([until_epoch is None, moderation_type == "Temporary Ban"]):
-            return ValueError("Epoch must be provided for temporary bans.")
+            raise ValueError("Epoch must be provided for temporary bans.")
 
         if any(
             not i
@@ -175,7 +175,7 @@ class Warnings(Document):
                 moderation_type,
             ]
         ):
-            return ValueError("All arguments must be provided.")
+            raise ValueError("All arguments must be provided.")
 
         identifier = ObjectId()
 
@@ -238,7 +238,7 @@ class Warnings(Document):
                 snowflake is None,
             ]
         ):
-            return ValueError("At least one argument must be provided.")
+            raise ValueError("At least one argument must be provided.")
 
         if snowflake is not None and all(
             [
@@ -296,7 +296,7 @@ class Warnings(Document):
                 bolo is False,
             ]
         ):
-            return ValueError("At least one argument must be provided.")
+            raise ValueError("At least one argument must be provided.")
 
         if snowflake is not None and all(
             [
@@ -356,7 +356,7 @@ class Warnings(Document):
                 guild_id is None,
             ]
         ):
-            return ValueError("At least one argument must be provided.")
+            raise ValueError("At least one argument must be provided.")
 
         if identifier is not None and all(
             [
@@ -409,7 +409,7 @@ class Warnings(Document):
         if not selected_item:
             return None
         if selected_item["Guild"] != (guild_id or selected_item["Guild"]):
-            return ValueError("Warning does not exist.")
+            raise ValueError("Warning does not exist.")
 
         warning = WarningItem(
             id=selected_item["_id"],

@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS broadcast_sources (
     name TEXT NOT NULL DEFAULT 'Рассылка',
     enabled INTEGER NOT NULL DEFAULT 1,
     require_role_id INTEGER,
-    embed_color TEXT NOT NULL DEFAULT '#5865F2'
+    embed_color TEXT NOT NULL DEFAULT '#4FC3F7'
 );
 
 CREATE TABLE IF NOT EXISTS broadcast_targets (
@@ -116,18 +116,74 @@ CREATE TABLE IF NOT EXISTS erlc_player_snapshots (
     recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_erlc_log_events_guild_type_ts
+    ON erlc_log_events (guild_id, event_type, event_ts);
+CREATE INDEX IF NOT EXISTS idx_erlc_player_snapshots_guild_time
+    ON erlc_player_snapshots (guild_id, recorded_at);
+
 CREATE TABLE IF NOT EXISTS guild_embed_settings (
     guild_id INTEGER PRIMARY KEY,
-    brand_name TEXT NOT NULL DEFAULT 'MoscowSystems',
-    footer_text TEXT NOT NULL DEFAULT 'MoscowSystems • ER:LC Network',
+    brand_name TEXT NOT NULL DEFAULT 'RU:LC Systems',
+    footer_text TEXT NOT NULL DEFAULT '',
     thumbnail_url TEXT,
-    color_primary TEXT NOT NULL DEFAULT '#5865F2',
+    color_primary TEXT NOT NULL DEFAULT '#2B2D31',
     color_success TEXT NOT NULL DEFAULT '#57F287',
     color_warning TEXT NOT NULL DEFAULT '#FEE75C',
     color_danger TEXT NOT NULL DEFAULT '#ED4245',
     color_info TEXT NOT NULL DEFAULT '#00A8FC',
-    show_timestamp INTEGER NOT NULL DEFAULT 1,
-    use_guild_icon INTEGER NOT NULL DEFAULT 1,
+    show_timestamp INTEGER NOT NULL DEFAULT 0,
+    use_guild_icon INTEGER NOT NULL DEFAULT 0,
     players_per_field INTEGER NOT NULL DEFAULT 10
 );
+
+CREATE TABLE IF NOT EXISTS ticket_config (
+    guild_id INTEGER PRIMARY KEY,
+    discord_category_id INTEGER,
+    log_channel_id INTEGER,
+    panel_channel_id INTEGER,
+    panel_message_id INTEGER,
+    name_template TEXT NOT NULL DEFAULT '・{step}・{category}-{number}',
+    max_open_per_user INTEGER NOT NULL DEFAULT 3,
+    counter INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS ticket_staff_roles (
+    guild_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    emoji TEXT NOT NULL DEFAULT '📩',
+    description TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (guild_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER NOT NULL,
+    category_id INTEGER,
+    channel_id INTEGER NOT NULL UNIQUE,
+    opener_id INTEGER NOT NULL,
+    opener_name TEXT NOT NULL,
+    claimed_by_id INTEGER,
+    status TEXT NOT NULL DEFAULT 'open',
+    subject TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    closed_at TEXT,
+    closed_by_id INTEGER,
+    close_reason TEXT,
+    transcript TEXT,
+    ticket_number INTEGER,
+    FOREIGN KEY (category_id) REFERENCES ticket_categories(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_tickets_guild_opener_status
+    ON tickets (guild_id, opener_id, status);
+CREATE INDEX IF NOT EXISTS idx_tickets_guild_status
+    ON tickets (guild_id, status);
 """

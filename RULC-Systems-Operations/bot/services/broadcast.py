@@ -11,6 +11,8 @@ from bot.db import Database
 if TYPE_CHECKING:
     from bot.services.embeds import EmbedFactory
 
+from bot.services.webhook_validate import is_valid_discord_webhook
+
 logger = logging.getLogger(__name__)
 
 
@@ -76,6 +78,9 @@ class BroadcastService:
         results: list[str] = []
 
         for target in enabled_targets:
+            if not is_valid_discord_webhook(target["webhook_url"]):
+                results.append(f"{target['name']}: invalid webhook URL (skipped)")
+                continue
             try:
                 async with session.post(target["webhook_url"], json=payload) as response:
                     if response.status >= 400:

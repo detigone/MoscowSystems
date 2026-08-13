@@ -4,6 +4,7 @@ from bson import ObjectId
 from roblox.client import Client
 from datamodels.Warnings import WarningItem
 from utils.constants import BLANK_COLOR
+from utils.rulc_embeds import finish_embed
 from utils.rulc_roblox import sync_punishment_created
 import roblox
 import logging
@@ -44,12 +45,13 @@ class OnPunishment(commands.Cog):
                         custom_warning_type = item
 
         if custom_warning_type is None:
+            punishments_cfg = guild_settings.get("punishments") or {}
             associations = {
-                "warning": guild_settings.get("punishments").get("channel"),
-                "kick": guild_settings.get("punishments").get("kick_channel"),
-                "ban": guild_settings.get("punishments").get("ban_channel"),
-                "temporary ban": guild_settings.get("punishments").get("ban_channel"),
-                "bolo": guild_settings.get("punishments").get("bolo_channel"),
+                "warning": punishments_cfg.get("channel"),
+                "kick": punishments_cfg.get("kick_channel"),
+                "ban": punishments_cfg.get("ban_channel"),
+                "temporary ban": punishments_cfg.get("ban_channel"),
+                "bolo": punishments_cfg.get("bolo_channel"),
             }
             try:
                 channel = await guild.fetch_channel(
@@ -57,7 +59,7 @@ class OnPunishment(commands.Cog):
                 )
             except discord.HTTPException:
                 channel = await guild.fetch_channel(
-                    guild_settings.get("punishments").get("channel", 0)
+                    (guild_settings.get("punishments") or {}).get("channel", 0)
                 )
         else:
             try:
@@ -67,7 +69,7 @@ class OnPunishment(commands.Cog):
             except discord.HTTPException:
                 try:
                     channel = await guild.fetch_channel(
-                        guild_settings.get("punishments").get("channel", 0)
+                        (guild_settings.get("punishments") or {}).get("channel", 0)
                     )
                 except discord.HTTPException:
                     channel = None
@@ -117,20 +119,16 @@ class OnPunishment(commands.Cog):
                 )
                 if punishments_enabled:
                     user_to_dm = await guild.fetch_member(warned_discord_id)
-                    embed = (
+                    embed = finish_embed(
                         discord.Embed(
-                            title="You have been Moderated.",
-                            description=(f"{guild.name} has moderated you in-game.\n"),
+                            title="Moderation",
+                            description=(
+                                f"{guild.name}\n"
+                                f"{warning.warning_type} · {warning.reason}"
+                            ),
                             color=BLANK_COLOR,
                         )
-                        .add_field(
-                            name="Moderation Information",
-                            value=(
-                                f"> **Punishment Type:** {warning.warning_type}\n"
-                                f"> **Reason:** {warning.reason}\n"
-                            ),
-                        )
-                        .set_thumbnail(url=thumbnail)
+                        .set_thumbnail(url=thumbnail),
                     )
                     await user_to_dm.send(embed=embed)
                     logging.info(
@@ -139,32 +137,27 @@ class OnPunishment(commands.Cog):
             except Exception as e:
                 pass
 
-            embed = (
+            embed = finish_embed(
                 discord.Embed(title="Punishment Issued", color=BLANK_COLOR)
                 .add_field(
-                    name="Moderator Information",
+                    name="Moderator",
                     value=(
-                        f"> **Moderator:** {moderator.mention}\n"
-                        f"> **Warning ID:** `{warning.snowflake}`\n"
-                        f"> **Reason:** {warning.reason}\n"
-                        f"> **Moderated At:** <t:{int(warning.time_epoch)}>\n"
+                        f"{moderator.mention} · `{warning.snowflake}`\n"
+                        f"{warning.reason} · <t:{int(warning.time_epoch)}:R>"
                     ),
                     inline=False,
                 )
                 .add_field(
-                    name="Violator Information",
+                    name="Player",
                     value=(
-                        f"> **Username:** {warning.username}\n"
-                        f"> **User ID:** `{warning.user_id}`\n"
-                        f"> **Punishment Type:** {warning.warning_type}\n"
-                        f"{'> **Until:** <t:{}>'.format(int(warning.until_epoch)) if warning.until_epoch not in [None, 0] else ''}"
+                        f"{warning.username} · `{warning.user_id}`\n"
+                        f"{warning.warning_type}"
+                        f"{f' · <t:{int(warning.until_epoch)}:R>' if warning.until_epoch not in [None, 0] else ''}"
                     ),
                     inline=False,
                 )
-                .set_author(
-                    name=guild.name, icon_url=guild.icon.url if guild.icon else ""
-                )
-                .set_thumbnail(url=thumbnail)
+                .set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else "")
+                .set_thumbnail(url=thumbnail),
             )
 
             await channel.send(embed=embed)

@@ -12,7 +12,7 @@ from discord.ext.commands import HybridCommandError
 from sentry_sdk import capture_exception, push_scope
 from aiohttp import ClientConnectorSSLError
 from decouple import config
-from utils.constants import BLANK_COLOR, BRAND_COLOR, ERROR_COLOR, RED_COLOR
+from utils.constants import BLANK_COLOR, ERROR_COLOR
 from utils.utils import error_gen, GuildCheckFailure
 from utils.prc_api import ServerLinkNotFound, ResponseFailure
 

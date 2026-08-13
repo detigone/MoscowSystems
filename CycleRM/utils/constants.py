@@ -60,7 +60,7 @@ base_configuration = {
 }
 
 """
-    Colour constants
+Colour constants — aligned with shared/rulc_theme (MoscowSystems/shared).
 """
 
 BLANK_COLOR = 0x2B2D31

@@ -14,7 +14,21 @@ class Database:
         self._conn = await aiosqlite.connect(self.path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
+        await self._migrate_ticket_schema()
         await self._conn.commit()
+
+    async def _migrate_ticket_schema(self) -> None:
+        cursor = await self.conn.execute("PRAGMA table_info(tickets)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "ticket_number" not in columns:
+            await self.conn.execute("ALTER TABLE tickets ADD COLUMN ticket_number INTEGER")
+        await self.conn.execute(
+            """
+            UPDATE ticket_config
+            SET name_template = '・{step}・{category}-{number}'
+            WHERE name_template IN ('ticket-{number}', '{category}-{number}')
+            """
+        )
 
     async def close(self) -> None:
         if self._conn:
@@ -344,7 +358,7 @@ class Database:
         source_channel_id: int,
         name: str,
         require_role_id: int | None = None,
-        embed_color: str = "#5865F2",
+        embed_color: str = "#4FC3F7",
     ) -> int:
         cursor = await self.conn.execute(
             """
@@ -646,3 +660,275 @@ class Database:
         )
         await self.conn.commit()
         await self.get_embed_settings(guild_id)
+
+    # ── Tickets ───────────────────────────────────────────────────────────
+
+    DEFAULT_TICKET_CATEGORIES = (
+        ("Поддержка", "🛟", "Общие вопросы и помощь"),
+        ("Жалоба", "🚨", "Жалоба на игрока или staff"),
+        ("Апелляция", "⚖️", "Обжалование наказания"),
+        ("Другое", "📩", "Всё остальное"),
+    )
+
+    async def ensure_ticket_config(self, guild_id: int) -> None:
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO ticket_config (guild_id) VALUES (?)",
+            (guild_id,),
+        )
+        for name, emoji, desc in self.DEFAULT_TICKET_CATEGORIES:
+            await self.conn.execute(
+                """
+                INSERT OR IGNORE INTO ticket_categories (guild_id, name, emoji, description)
+                VALUES (?, ?, ?, ?)
+                """,
+                (guild_id, name, emoji, desc),
+            )
+        await self.conn.execute(
+            """
+            UPDATE ticket_config
+            SET name_template = '・{step}・{category}-{number}'
+            WHERE guild_id = ? AND name_template IN ('ticket-{number}', '{category}-{number}')
+            """,
+            (guild_id,),
+        )
+        await self.conn.commit()
+
+    async def get_ticket_config(self, guild_id: int) -> aiosqlite.Row:
+        await self.ensure_ticket_config(guild_id)
+        cursor = await self.conn.execute(
+            "SELECT * FROM ticket_config WHERE guild_id = ?",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        return row
+
+    async def update_ticket_config(self, guild_id: int, **fields: object) -> None:
+        allowed = {
+            "discord_category_id",
+            "log_channel_id",
+            "panel_channel_id",
+            "panel_message_id",
+            "name_template",
+            "max_open_per_user",
+            "counter",
+        }
+        parts: list[str] = []
+        values: list[object] = []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            parts.append(f"{key} = ?")
+            values.append(value)
+        if not parts:
+            return
+        values.append(guild_id)
+        await self.conn.execute(
+            f"UPDATE ticket_config SET {', '.join(parts)} WHERE guild_id = ?",
+            values,
+        )
+        await self.conn.commit()
+
+    async def next_ticket_number(self, guild_id: int) -> int:
+        await self.ensure_ticket_config(guild_id)
+        await self.conn.execute(
+            "UPDATE ticket_config SET counter = counter + 1 WHERE guild_id = ?",
+            (guild_id,),
+        )
+        cursor = await self.conn.execute(
+            "SELECT counter FROM ticket_config WHERE guild_id = ?",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        await self.conn.commit()
+        return int(row[0]) if row else 1
+
+    async def add_ticket_staff_role(self, guild_id: int, role_id: int) -> None:
+        await self.ensure_ticket_config(guild_id)
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO ticket_staff_roles (guild_id, role_id) VALUES (?, ?)",
+            (guild_id, role_id),
+        )
+        await self.conn.commit()
+
+    async def remove_ticket_staff_role(self, guild_id: int, role_id: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM ticket_staff_roles WHERE guild_id = ? AND role_id = ?",
+            (guild_id, role_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def list_ticket_staff_roles(self, guild_id: int) -> list[int]:
+        cursor = await self.conn.execute(
+            "SELECT role_id FROM ticket_staff_roles WHERE guild_id = ?",
+            (guild_id,),
+        )
+        rows = await cursor.fetchall()
+        return [int(r[0]) for r in rows]
+
+    async def list_ticket_categories(
+        self, guild_id: int, *, enabled_only: bool = True
+    ) -> list[aiosqlite.Row]:
+        await self.ensure_ticket_config(guild_id)
+        clause = "AND enabled = 1" if enabled_only else ""
+        cursor = await self.conn.execute(
+            f"""
+            SELECT * FROM ticket_categories
+            WHERE guild_id = ? {clause}
+            ORDER BY id
+            """,
+            (guild_id,),
+        )
+        return await cursor.fetchall()
+
+    async def add_ticket_category(
+        self,
+        guild_id: int,
+        name: str,
+        *,
+        emoji: str = "📩",
+        description: str = "",
+    ) -> int | None:
+        await self.ensure_ticket_config(guild_id)
+        try:
+            cursor = await self.conn.execute(
+                """
+                INSERT INTO ticket_categories (guild_id, name, emoji, description)
+                VALUES (?, ?, ?, ?)
+                """,
+                (guild_id, name.strip(), emoji.strip() or "📩", description.strip()),
+            )
+            await self.conn.commit()
+            return int(cursor.lastrowid)
+        except aiosqlite.IntegrityError:
+            return None
+
+    async def remove_ticket_category(self, guild_id: int, category_id: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM ticket_categories WHERE guild_id = ? AND id = ?",
+            (guild_id, category_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def get_ticket_category(self, category_id: int) -> aiosqlite.Row | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM ticket_categories WHERE id = ?",
+            (category_id,),
+        )
+        return await cursor.fetchone()
+
+    async def count_open_tickets(self, guild_id: int, opener_id: int) -> int:
+        cursor = await self.conn.execute(
+            """
+            SELECT COUNT(*) FROM tickets
+            WHERE guild_id = ? AND opener_id = ? AND status = 'open'
+            """,
+            (guild_id, opener_id),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
+
+    async def create_ticket(
+        self,
+        *,
+        guild_id: int,
+        category_id: int | None,
+        channel_id: int,
+        opener_id: int,
+        opener_name: str,
+        subject: str | None = None,
+        ticket_number: int | None = None,
+    ) -> int:
+        cursor = await self.conn.execute(
+            """
+            INSERT INTO tickets (
+                guild_id, category_id, channel_id, opener_id, opener_name, subject, ticket_number
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (guild_id, category_id, channel_id, opener_id, opener_name, subject, ticket_number),
+        )
+        await self.conn.commit()
+        return int(cursor.lastrowid)
+
+    async def get_ticket_by_channel(self, channel_id: int) -> aiosqlite.Row | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM tickets WHERE channel_id = ?",
+            (channel_id,),
+        )
+        return await cursor.fetchone()
+
+    async def get_ticket(self, ticket_id: int) -> aiosqlite.Row | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM tickets WHERE id = ?",
+            (ticket_id,),
+        )
+        return await cursor.fetchone()
+
+    async def claim_ticket(self, ticket_id: int, staff_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE tickets SET claimed_by_id = ? WHERE id = ? AND status = 'open'",
+            (staff_id, ticket_id),
+        )
+        await self.conn.commit()
+
+    async def close_ticket(
+        self,
+        ticket_id: int,
+        *,
+        closed_by_id: int,
+        reason: str,
+        transcript: str | None = None,
+    ) -> None:
+        await self.conn.execute(
+            """
+            UPDATE tickets
+            SET status = 'closed',
+                closed_at = datetime('now'),
+                closed_by_id = ?,
+                close_reason = ?,
+                transcript = ?
+            WHERE id = ?
+            """,
+            (closed_by_id, reason, transcript, ticket_id),
+        )
+        await self.conn.commit()
+
+    async def reopen_ticket(self, ticket_id: int) -> None:
+        await self.conn.execute(
+            """
+            UPDATE tickets
+            SET status = 'open',
+                closed_at = NULL,
+                closed_by_id = NULL,
+                close_reason = NULL,
+                claimed_by_id = NULL
+            WHERE id = ?
+            """,
+            (ticket_id,),
+        )
+        await self.conn.commit()
+
+    async def ticket_statistics(self, guild_id: int) -> dict[str, int]:
+        cursor = await self.conn.execute(
+            """
+            SELECT
+                SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_count,
+                SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed_count,
+                COUNT(*) AS total
+            FROM tickets WHERE guild_id = ?
+            """,
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        return dict(row) if row else {"open_count": 0, "closed_count": 0, "total": 0}
+
+    async def guilds_with_ticket_panels(self) -> list[aiosqlite.Row]:
+        cursor = await self.conn.execute(
+            """
+            SELECT * FROM ticket_config
+            WHERE panel_message_id IS NOT NULL AND panel_channel_id IS NOT NULL
+            """
+        )
+        return await cursor.fetchall()

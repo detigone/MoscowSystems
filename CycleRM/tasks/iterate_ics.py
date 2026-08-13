@@ -75,21 +75,21 @@ async def iterate_ics(bot):
         # print(json.dumps(new_data, indent=4))
 
         if new_data != item["data"]:
-            # Updated data
+            item["data"] = new_data
+            await bot.ics.update_by_id(item)
             for arr in item["associated_messages"]:
-                channel, message_id = arr[0], arr[1]
-                
-                channel = guild.get_channel(channel)
-                message = await channel.fetch_message(message_id)
-                if channel and not message:
-                    try:
-                        message = await channel.fetch_message(message_id)
-                    except discord.NotFound:
-                        continue
-                    except discord.HTTPException:
-                        continue
+                channel_id, message_id = arr[0], arr[1]
+                channel = guild.get_channel(channel_id)
+                if channel is None:
+                    continue
+                try:
+                    message = await channel.fetch_message(message_id)
+                except discord.NotFound:
+                    continue
+                except discord.HTTPException:
+                    continue
 
-                if not message or not channel:
+                if not message:
                     continue
 
                 await message.edit(

@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+_SHARED = Path(__file__).resolve().parent.parent / "shared"
+if _SHARED.is_dir() and str(_SHARED) not in sys.path:
+    sys.path.insert(0, str(_SHARED))
+
 import datetime
 import json
 import logging
@@ -312,12 +319,14 @@ class Bot(commands.AutoShardedBot):
                 pass
                 # await bot.tree.sync(guild=discord.Object(id=987798554972143728))
             elif environment == "CUSTOM":
-                guild_id = int(config("CUSTOM_GUILD_ID", default="0"))
+                guild_id = int(config("CUSTOM_GUILD_ID", default="0") or "0")
                 if guild_id:
                     self.tree.copy_global_to(guild=discord.Object(id=guild_id))
                     await self.tree.sync(guild=discord.Object(id=guild_id))
                 else:
-                    await self.tree.sync()
+                    logging.warning(
+                        "CUSTOM_GUILD_ID not set — slash commands not synced"
+                    )
             bot.is_synced = True
 
             # we do this so the bot can get a cache of things before we spam discord with fetches
@@ -656,6 +665,9 @@ async def check_privacy(bot: Bot, guild: int, setting: str):
 
 
 async def warning_json_to_mongo(jsonName: str, guildId: int):
+    from utils.mongo import Document
+
+    legacy_warnings = Document(bot.db, "warnings")
     with open(f"{jsonName}", "r") as f:
         logging.info(f)
         f = json.load(f)
@@ -667,8 +679,8 @@ async def warning_json_to_mongo(jsonName: str, guildId: int):
         logging.info([key, value])
         logging.info(key.lower())
 
-        if await bot.warnings.find_by_id(key.lower()):
-            data = await bot.warnings.find_by_id(key.lower())
+        if await legacy_warnings.find_by_id(key.lower()):
+            data = await legacy_warnings.find_by_id(key.lower())
             for item in data["warnings"]:
                 structure["warnings"].append(item)
 
@@ -680,10 +692,10 @@ async def warning_json_to_mongo(jsonName: str, guildId: int):
 
         logging.info(structure)
 
-        if await bot.warnings.find_by_id(key.lower()) == None:
-            await bot.warnings.insert(structure)
+        if await legacy_warnings.find_by_id(key.lower()) == None:
+            await legacy_warnings.insert(structure)
         else:
-            await bot.warnings.update(structure)
+            await legacy_warnings.update(structure)
 bot.warning_json_to_mongo = warning_json_to_mongo
 
 # include environment variables
@@ -703,7 +715,10 @@ elif environment == "ALPHA":
         bot_token = ""
     logging.info("Using CycleRM V4 Alpha token...")
 elif environment == "CUSTOM":
-    bot_token = config("CUSTOM_BOT_TOKEN")
+    try:
+        bot_token = config("CUSTOM_BOT_TOKEN")
+    except decouple.UndefinedValueError:
+        bot_token = ""
     logging.info("Using CycleRM custom bot token...")
 else:
     raise Exception("Invalid environment")

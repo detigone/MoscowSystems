@@ -203,16 +203,19 @@ class ErlcStatsService:
         fig.patch.set_facecolor(colors["bg"])
         ax.set_facecolor(colors["bg"])
         if line:
-            ax.plot(labels, values, color=colors["success"], marker="o", linewidth=2)
-            ax.fill_between(range(len(values)), values, alpha=0.15, color=colors["success"])
+            x = list(range(len(values)))
+            ax.plot(x, values, color=colors["success"], marker="o", linewidth=2)
+            ax.fill_between(x, values, alpha=0.15, color=colors["success"])
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels, rotation=32, ha="right")
         else:
             ax.bar(labels, values, color=colors["accent"], edgecolor=colors["grid"])
+            plt.xticks(rotation=32, ha="right")
         ax.set_title(title, color=colors["text"], fontsize=13, pad=12)
         ax.set_ylabel(ylabel, color=colors["text"])
         ax.tick_params(colors=colors["text"])
         for spine in ax.spines.values():
             spine.set_color(colors["grid"])
-        plt.xticks(rotation=32, ha="right")
         plt.tight_layout()
         buffer = io.BytesIO()
         fig.savefig(buffer, format="png", dpi=130, facecolor=colors["bg"])
@@ -225,8 +228,28 @@ class ErlcStatsService:
         rows = await self.db.get_snapshots_since(guild_id, since)
         if len(rows) < 2:
             return None
-        labels = [row["recorded_at"][11:16] for row in rows[-24:]]
-        values = [row["player_count"] for row in rows[-24:]]
+
+        buckets: dict[str, list[int]] = {}
+        for row in rows:
+            hour_key = str(row["recorded_at"])[:13]
+            buckets.setdefault(hour_key, []).append(int(row["player_count"]))
+
+        now = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        labels: list[str] = []
+        values: list[int] = []
+        for offset in range(23, -1, -1):
+            slot = now - timedelta(hours=offset)
+            key = slot.strftime("%Y-%m-%d %H")
+            counts = buckets.get(key, [])
+            labels.append(slot.strftime("%H:00"))
+            values.append(round(sum(counts) / len(counts)) if counts else 0)
+
+        if max(values) == 0:
+            step = max(1, len(rows) // 24)
+            sampled = rows[::step][-24:]
+            labels = [str(r["recorded_at"])[11:16] for r in sampled]
+            values = [int(r["player_count"]) for r in sampled]
+
         return await self._chart_file(
             guild_id,
             "Статистика игроков (24ч)",
@@ -279,5 +302,8 @@ class ErlcStatsService:
             guild,
             title=f"📊 {title}",
             color=theme.color_info,
-            description="График за последние **24 часа**",
+            description=(
+                "График за последние **24 часа**.\n"
+                "Данные собираются автоматически каждые **2 мин.**"
+            ),
         )

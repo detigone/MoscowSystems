@@ -5,12 +5,14 @@ import logging
 import discord
 
 from bot.core.checks import is_config_user
+from bot.services.webhook_validate import is_valid_discord_webhook
 
 logger = logging.getLogger(__name__)
 
 TIMEOUT = 900
 
 COLOR_PRESETS = {
+    "brand": ("#4FC3F7", "RU:LC (основной)"),
     "blurple": ("#5865F2", "Blurple"),
     "green": ("#57F287", "Зелёный"),
     "yellow": ("#FEE75C", "Жёлтый"),
@@ -51,33 +53,41 @@ class ConfigPanel:
         groups = await bot.db.get_groups_for_guild(gid)
         broadcasts = await bot.db.list_broadcast_sources(gid)
         rules = await bot.db.get_conditional_rules(gid)
+        ticket_stats = await bot.db.ticket_statistics(gid)
 
         embed = discord.Embed(
-            title="⚙️ MoscowSystems — Панель управления",
+            title="⚙️ Панель управления",
             description=(
+                f"**{theme.brand_name}** · настройки сервера\n\n"
                 "Выберите **раздел** в меню ниже.\n"
                 "Все изменения сохраняются сразу."
             ),
             color=theme.color_primary,
         )
         if guild.icon:
+            embed.set_author(name=guild.name, icon_url=guild.icon.url)
             embed.set_thumbnail(url=guild.icon.url)
 
         embed.add_field(
             name="🎮 ER:LC",
-            value=erlc["server_name"] if erlc else "❌ не подключён",
+            value=f"✅ {erlc['server_name']}" if erlc else "❌ не подключён",
             inline=True,
         )
         embed.add_field(
             name="🔊 Онлайн-канал",
-            value=f"<#{voice['channel_id']}>" if voice else "—",
+            value=f"✅ <#{voice['channel_id']}>" if voice else "—",
             inline=True,
         )
-        embed.add_field(name="👤 Autorole", value="✅" if autoroles else "—", inline=True)
-        embed.add_field(name="🔄 Sync", value=str(len(groups)), inline=True)
-        embed.add_field(name="📢 Рассылки", value=str(len(broadcasts)), inline=True)
-        embed.add_field(name="🧩 Правила", value=str(len(rules)), inline=True)
-        embed.set_footer(text=f"{theme.brand_name} • только для владельцев")
+        embed.add_field(name="👤 Autorole", value="✅ включён" if autoroles else "—", inline=True)
+        embed.add_field(name="🔄 Sync-группы", value=f"`{len(groups)}`", inline=True)
+        embed.add_field(name="📢 Рассылки", value=f"`{len(broadcasts)}`", inline=True)
+        embed.add_field(name="🧩 Условные роли", value=f"`{len(rules)}`", inline=True)
+        embed.add_field(
+            name="🎫 Тикеты",
+            value=f"открыто **`{ticket_stats.get('open_count', 0)}`**",
+            inline=True,
+        )
+        embed.set_footer(text=f"{theme.brand_name} · доступ ограничен")
         return embed
 
     @staticmethod
@@ -91,6 +101,7 @@ class ConfigPanel:
             "voice": ("🔊 Счётчик онлайна", "Голосовой канал с количеством игроков ER:LC."),
             "erlc": ("🎮 ER:LC", "Подключение API-ключа приватного сервера."),
             "appearance": ("🎨 Оформление", "Цвета, бренд и стиль embed-сообщений."),
+            "tickets": ("🎫 Тикеты", "Панель поддержки, staff-роли и категории обращений."),
         }
         title, desc = meta[section]
 
@@ -176,6 +187,40 @@ class ConfigPanel:
             else:
                 embed.add_field(name="Статус", value="Нажмите **🔑 API ключ**", inline=False)
 
+        elif section == "tickets":
+            ts = await bot.db.ticket_statistics(gid)
+            cfg = await bot.db.get_ticket_config(gid)
+            staff = await bot.db.list_ticket_staff_roles(gid)
+            cat = guild.get_channel(int(cfg["discord_category_id"])) if cfg["discord_category_id"] else None
+            embed.add_field(
+                name="Статус",
+                value=(
+                    f"Открыто: **`{ts.get('open_count', 0)}`** · "
+                    f"Всего: **`{ts.get('total', 0)}`**"
+                ),
+                inline=False,
+            )
+            embed.add_field(
+                name="Категория Discord",
+                value=cat.name if cat else "— (`/ticket категория-канал`)",
+                inline=True,
+            )
+            embed.add_field(
+                name="Staff-роли",
+                value=str(len(staff)),
+                inline=True,
+            )
+            embed.add_field(
+                name="Быстрый старт",
+                value=(
+                    "1. `/ticket категория-канал`\n"
+                    "2. `/ticket staff-добавить`\n"
+                    "3. `/ticket канал-логов`\n"
+                    "4. `/ticket панель`"
+                ),
+                inline=False,
+            )
+
         embed.set_footer(text="◀ Главная — вернуться в меню")
         return embed
 
@@ -189,6 +234,7 @@ async def build_section_view(bot, guild: discord.Guild, section: str) -> discord
         "voice": _build_voice_view,
         "erlc": _build_erlc_view,
         "appearance": _build_appearance_view,
+        "tickets": _build_tickets_view,
     }
     return await builders[section](bot, guild)
 
@@ -268,6 +314,7 @@ class SectionSelect(discord.ui.Select):
                 discord.SelectOption(label="Счётчик онлайна", value="voice", emoji="🔊"),
                 discord.SelectOption(label="ER:LC", value="erlc", emoji="🎮"),
                 discord.SelectOption(label="Оформление", value="appearance", emoji="🎨"),
+                discord.SelectOption(label="Тикеты", value="tickets", emoji="🎫"),
             ],
         )
 
@@ -480,7 +527,7 @@ class ConditionalNameModal(discord.ui.Modal, title="Новое правило"):
                 "1️⃣ Целевая роль **(A)** — выдаётся\n"
                 "2️⃣ Триггер **(B)** — должна быть у участника"
             ),
-            color=0x5865F2,
+            color=0x4FC3F7,
         )
         await interaction.response.edit_message(
             embed=embed,
@@ -683,10 +730,18 @@ class BroadcastWebhookModal(discord.ui.Modal, title="Webhook фракции"):
         self.source_id = source_id
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        url = self.url.value.strip()
+        if not is_valid_discord_webhook(url):
+            await interaction.response.send_message(
+                "Неверный URL. Разрешены только Discord webhooks "
+                "(https://discord.com/api/webhooks/…).",
+                ephemeral=True,
+            )
+            return
         await self.bot.db.add_broadcast_target(
             self.source_id,
             self.faction.value.strip(),
-            self.url.value.strip(),
+            url,
         )
         await _refresh_section(
             interaction,
@@ -890,10 +945,10 @@ class BrandButton(discord.ui.Button):
 
 
 class BrandModal(discord.ui.Modal, title="Бренд и footer"):
-    brand = discord.ui.TextInput(label="Название бренда", placeholder="MoscowSystems", required=False)
+    brand = discord.ui.TextInput(label="Название бренда", placeholder="RU:LC Systems", required=False)
     footer = discord.ui.TextInput(
         label="Footer embed",
-        placeholder="MoscowSystems • ER:LC Network",
+        placeholder="RU:LC Systems · Operations",
         required=False,
     )
 
@@ -935,3 +990,81 @@ class ResetAppearanceButton(discord.ui.Button):
     async def callback(self, interaction: discord.Interaction) -> None:
         await self.bot.db.reset_embed_settings(interaction.guild.id)
         await _refresh_section(interaction, self.bot, "appearance", note="✅ Сброшено к стандарту.")
+
+
+async def _build_tickets_view(bot, guild: discord.Guild) -> discord.ui.View:
+    class TicketsConfigView(ConfigBaseView):
+        section = "tickets"
+
+        def __init__(self) -> None:
+            super().__init__(bot)
+            self.add_item(PublishTicketPanelButton(bot))
+            self.add_item(TicketSettingsButton(bot))
+
+    return TicketsConfigView()
+
+
+class PublishTicketPanelButton(discord.ui.Button):
+    def __init__(self, bot) -> None:
+        super().__init__(
+            label="Опубликовать панель",
+            style=discord.ButtonStyle.success,
+            emoji="📨",
+            row=1,
+        )
+        self.bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not _allowed(interaction, self.bot):
+            return await _deny(interaction)
+        modal = TicketPanelChannelModal(self.bot)
+        await interaction.response.send_modal(modal)
+
+
+class TicketPanelChannelModal(discord.ui.Modal, title="Канал для панели тикетов"):
+    channel_id = discord.ui.TextInput(
+        label="ID текстового канала",
+        placeholder="123456789012345678",
+        required=True,
+        max_length=20,
+    )
+
+    def __init__(self, bot) -> None:
+        super().__init__()
+        self.bot = bot
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if not interaction.guild:
+            return
+        try:
+            cid = int(str(self.channel_id.value).strip())
+        except ValueError:
+            await interaction.response.send_message("Неверный ID.", ephemeral=True)
+            return
+        channel = interaction.guild.get_channel(cid)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("Канал не найден.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        msg = await self.bot.tickets.post_panel(interaction.guild, channel)
+        await interaction.followup.send(
+            f"✅ Панель: {channel.mention} · [ссылка]({msg.jump_url})",
+            ephemeral=True,
+        )
+
+
+class TicketSettingsButton(discord.ui.Button):
+    def __init__(self, bot) -> None:
+        super().__init__(
+            label="Настройки",
+            style=discord.ButtonStyle.secondary,
+            emoji="⚙️",
+            row=1,
+        )
+        self.bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not _allowed(interaction, self.bot):
+            return await _deny(interaction)
+        embed = await self.bot.embeds.ticket_settings_embed(interaction.guild)
+        await interaction.response.send_message(embed=embed, ephemeral=True)

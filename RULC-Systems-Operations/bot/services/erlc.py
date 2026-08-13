@@ -66,17 +66,3 @@ class ErlcService:
         async with client_cls as client:
             return await client.logs(log_type)
 
-    async def run_command(self, guild_id: int, command: str) -> str:
-        config, client_cls = await self._client(guild_id)
-        if not config:
-            raise RuntimeError("ER:LC сервер не настроен")
-
-        try:
-            from erlc_api import AsyncClient, CommandPolicy
-        except ImportError as exc:
-            raise RuntimeError("Пакет erlc-api.py не установлен") from exc
-
-        policy = CommandPolicy(allowed={"h", "pm", "kick", "ban", "m"}, max_length=200)
-        async with AsyncClient(config["server_key"]) as client:
-            await client.command(command, policy=policy)
-        return f"Команда выполнена: `{command}`"

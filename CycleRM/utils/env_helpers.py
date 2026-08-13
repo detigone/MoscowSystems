@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decouple import config
 
-_environment = config("ENVIRONMENT", default="PRODUCTION").upper()
+_environment = config("ENVIRONMENT", default="DEVELOPMENT").upper()
 _custom_guild_id: int | None = None
 
 

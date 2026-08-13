@@ -91,7 +91,7 @@ async def tempban_checks(bot):
                 continue
 
             await bot.prc_api.unban_user(
-                punishment_item["Guild"], punishment_item["user_id"]
+                punishment_item["Guild"], punishment_item["UserID"]
             )
     except PyMongoError as exc:
         logging.warning("tempban_checks skipped: %s", exc)

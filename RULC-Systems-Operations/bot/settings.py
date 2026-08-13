@@ -18,15 +18,22 @@ class Settings:
     dev_guild_ids: list[int]
     database_path: Path
     config_discord_ids: list[int]
-    bloxlink_api_key: str
-    bloxlink_guild_id: int
     project_root: Path = PROJECT_ROOT
 
 
-def _parse_int_list(raw: str | None) -> list[int]:
+def _parse_int_list(raw: str | None, *, name: str) -> list[int]:
     if not raw:
         return []
-    return [int(item.strip()) for item in raw.split(",") if item.strip()]
+    ids: list[int] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.append(int(part))
+        except ValueError as exc:
+            raise RuntimeError(f"{name} must be comma-separated integers, got: {part!r}") from exc
+    return ids
 
 
 def resolve_database_path(raw: str | None = None) -> Path:
@@ -42,27 +49,16 @@ def load_settings() -> Settings:
         raise RuntimeError("DISCORD_TOKEN is not set. Copy .env.example to .env and fill it in.")
 
     db_path = resolve_database_path()
-    dev_guild_ids = _parse_int_list(os.getenv("DEV_GUILD_IDS"))
+    dev_guild_ids = _parse_int_list(os.getenv("DEV_GUILD_IDS"), name="DEV_GUILD_IDS")
 
-    config_ids = _parse_int_list(os.getenv("CONFIG_DISCORD_IDS"))
+    config_ids = _parse_int_list(os.getenv("CONFIG_DISCORD_IDS"), name="CONFIG_DISCORD_IDS")
     if not config_ids:
-        config_ids = _parse_int_list(os.getenv("OWNER_DISCORD_IDS"))
-
-    bloxlink_api_key = os.getenv("BLOXLINK_API_KEY", "").strip()
-    bloxlink_guild_raw = os.getenv("BLOXLINK_GUILD_ID", "").strip()
-    if bloxlink_guild_raw:
-        bloxlink_guild_id = int(bloxlink_guild_raw)
-    elif dev_guild_ids:
-        bloxlink_guild_id = dev_guild_ids[0]
-    else:
-        bloxlink_guild_id = 0
+        config_ids = _parse_int_list(os.getenv("OWNER_DISCORD_IDS"), name="OWNER_DISCORD_IDS")
 
     return Settings(
         discord_token=token,
         dev_guild_ids=dev_guild_ids,
         database_path=db_path,
         config_discord_ids=config_ids,
-        bloxlink_api_key=bloxlink_api_key,
-        bloxlink_guild_id=bloxlink_guild_id,
         project_root=PROJECT_ROOT,
     )

@@ -85,18 +85,7 @@ async def mc_discord_checks(bot):
     base = {"MC.discord_checks.enabled": True}
     if is_custom() and custom_guild_id():
         base["_id"] = custom_guild_id()
-    pipeline = [
-        {"$match": base},
-        {
-            "$lookup": {
-                "from": "mc_keys",
-                "localField": "_id",
-                "foreignField": "_id",
-                "as": "server_key",
-            }
-        },
-        {"$match": {"server_key": {"$ne": []}}},
-    ]
+    pipeline = [{"$match": base}]
     
     semaphore = asyncio.Semaphore(3)
     async def process_guild(items):

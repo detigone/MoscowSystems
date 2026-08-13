@@ -3,7 +3,8 @@ from discord.ext import commands
 from bson import ObjectId
 from roblox.client import Client
 from datamodels.Warnings import WarningItem
-from utils.constants import BLANK_COLOR
+from utils.constants import BRAND_COLOR
+from utils.rulc_embeds import finish_embed
 from utils.rulc_roblox import sync_punishment_revoked
 import roblox
 
@@ -40,11 +41,12 @@ class OnPunishmentDelete(commands.Cog):
                         custom_warning_type = item
 
         if custom_warning_type is None:
+            punishments_cfg = guild_settings.get("punishments") or {}
             associations = {
-                "warning": guild_settings.get("punishments").get("channel"),
-                "kick": guild_settings.get("punishments").get("kick_channel"),
-                "ban": guild_settings.get("punishments").get("ban_channel"),
-                "bolo": guild_settings.get("punishments").get("bolo_channel"),
+                "warning": punishments_cfg.get("channel"),
+                "kick": punishments_cfg.get("kick_channel"),
+                "ban": punishments_cfg.get("ban_channel"),
+                "bolo": punishments_cfg.get("bolo_channel"),
             }
             try:
                 channel = await guild.fetch_channel(
@@ -60,7 +62,7 @@ class OnPunishmentDelete(commands.Cog):
             except discord.HTTPException:
                 try:
                     channel = await guild.fetch_channel(
-                        guild_settings.get("punishments").get("channel", 0)
+                        (guild_settings.get("punishments") or {}).get("channel", 0)
                     )
                 except discord.HTTPException:
                     channel = None
@@ -81,32 +83,27 @@ class OnPunishmentDelete(commands.Cog):
 
         if channel is not None:
             await channel.send(
-                embed=discord.Embed(title="Punishment Revoked", color=BLANK_COLOR)
-                .add_field(
-                    name="Moderator Information",
-                    value=(
-                        f" **Moderator:** {moderator.mention}\n"
-                        f" **Revoked By:** {manager.mention}\n"
-                        f" **Warning ID:** `{warning.snowflake}`\n"
-                        f" **Reason:** {warning.reason}\n"
-                        f" **Moderated At:** <t:{int(warning.time_epoch)}>\n"
-                    ),
-                    inline=False,
+                embed=finish_embed(
+                    discord.Embed(title="Punishment Revoked", color=BLANK_COLOR)
+                    .add_field(
+                        name="Moderator",
+                        value=(
+                            f"{moderator.mention} · revoked {manager.mention}\n"
+                            f"`{warning.snowflake}` · {warning.reason}"
+                        ),
+                        inline=False,
+                    )
+                    .add_field(
+                        name="Player",
+                        value=(
+                            f"{warning.username} · `{warning.user_id}`\n"
+                            f"{warning.warning_type}"
+                        ),
+                        inline=False,
+                    )
+                    .set_author(name=guild.name, icon_url=guild.icon.url if guild.icon else "")
+                    .set_thumbnail(url=thumbnail),
                 )
-                .add_field(
-                    name="Violator Information",
-                    value=(
-                        f" **Username:** {warning.username}\n"
-                        f" **User ID:** `{warning.user_id}`\n"
-                        f"{'' if warning.until_epoch not in [None, 0] else ''} **Punishment Type:** {warning.warning_type}\n"
-                        f"{' **Until:** <t:{}>'.format(int(warning.until_epoch)) if warning.until_epoch not in [None, 0] else ''}"
-                    ),
-                    inline=False,
-                )
-                .set_author(
-                    name=guild.name, icon_url=guild.icon.url if guild.icon else ""
-                )
-                .set_thumbnail(url=thumbnail)
             )
 
 

@@ -6,17 +6,11 @@ from datetime import datetime, timezone
 import discord
 
 from bot.db import Database
+from rulc_theme.embeds import hex_color
+from rulc_theme.tokens import HEX_PRIMARY
 
-MEDALS = ("🥇", "🥈", "🥉")
-TEAM_EMOJI = {
-    "police": "🚓",
-    "sheriff": "⭐",
-    "dot": "🚧",
-    "fire": "🚒",
-    "ems": "🚑",
-    "civ": "👤",
-    "civilian": "👤",
-}
+MEDALS = ()  # minimal: plain numbers
+TEAM_EMOJI: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -53,11 +47,7 @@ class EmbedTheme:
 
 
 def _hex_color(value: str) -> int:
-    cleaned = (value or "#5865F2").lstrip("#")
-    try:
-        return int(cleaned, 16)
-    except ValueError:
-        return 0x5865F2
+    return hex_color(value, fallback=HEX_PRIMARY)
 
 
 class EmbedFactory:
@@ -76,26 +66,21 @@ class EmbedFactory:
         title: str,
         color: int,
         description: str | None = None,
+        author: str | None = None,
     ) -> discord.Embed:
         embed = discord.Embed(title=title, description=description, color=color)
+        if author and guild:
+            embed.set_author(name=author, icon_url=guild.icon.url if guild.icon else None)
         if theme.show_timestamp:
             embed.timestamp = datetime.now(timezone.utc)
         icon = theme.thumbnail_url
-        if not icon and theme.use_guild_icon and guild and guild.icon:
-            icon = guild.icon.url
         if icon:
             embed.set_thumbnail(url=icon)
-        footer = theme.footer_text
-        if guild:
-            footer = f"{footer} • {guild.name}"
-        embed.set_footer(text=footer)
         return embed
 
     @staticmethod
     def _rank_label(rank: int) -> str:
-        if 1 <= rank <= 3:
-            return MEDALS[rank - 1]
-        return f"`{rank:02d}`"
+        return f"{rank}."
 
     @staticmethod
     def _leaderboard_lines(
@@ -109,16 +94,12 @@ class EmbedFactory:
             rank = start + offset
             label = EmbedFactory._rank_label(rank)
             tail = f" {suffix}" if suffix else ""
-            lines.append(f"{label} **{name}** — `{count}`{tail}")
+            lines.append(f"{label} **{name}** — {count}{tail}")
         return lines
 
     @staticmethod
     def _team_icon(team: str) -> str:
-        key = team.lower().strip()
-        for name, emoji in TEAM_EMOJI.items():
-            if name in key:
-                return emoji
-        return "▫️"
+        return ""
 
     async def players_embed(
         self,
@@ -135,24 +116,19 @@ class EmbedFactory:
         embed = self._base(
             theme,
             guild,
-            title="👥 Игроки на сервере",
+            title="Игроки",
             color=theme.color_primary,
-            description=f"**{server_name}**\nОнлайн: **{online}** / **{max_players}**",
+            description=f"{server_name} · {online}/{max_players}",
         )
 
         if not players:
-            embed.add_field(
-                name="📭 Пусто",
-                value="На сервере сейчас нет игроков или сервер недоступен.",
-                inline=False,
-            )
+            embed.description = (embed.description or "") + "\n\nСервер пуст."
             return embed
 
         by_team: dict[str, list[str]] = {}
         for player in players:
             team = getattr(player, "team", None) or "Без команды"
-            icon = self._team_icon(team)
-            by_team.setdefault(team, []).append(f"{icon} {player.name}")
+            by_team.setdefault(team, []).append(player.name)
 
         for team_name in sorted(by_team.keys(), key=str.lower):
             members = by_team[team_name]
@@ -161,7 +137,7 @@ class EmbedFactory:
                 for i in range(0, len(members), theme.players_per_field)
             ]
             for idx, chunk in enumerate(chunks):
-                field_title = f"{self._team_icon(team_name)} {team_name}"
+                field_title = team_name
                 if len(chunks) > 1:
                     field_title += f" ({idx + 1}/{len(chunks)})"
                 embed.add_field(name=field_title, value="\n".join(chunk)[:1024], inline=True)
@@ -177,34 +153,22 @@ class EmbedFactory:
         color_key: str,
         rows: list[tuple[str, int]],
         suffix: str = "",
-        empty: str = "Нет данных за последние **24 часа**.\nБот собирает логи каждые 2 минуты.",
+        empty: str = "Нет данных за 24 часа.",
     ) -> discord.Embed:
         theme = await self.theme(guild.id)
         color = getattr(theme, f"color_{color_key}", theme.color_primary)
         embed = self._base(
             theme,
             guild,
-            title=f"{emoji} {title}",
+            title=title,
             color=color,
-            description="Топ за последние **24 часа**",
         )
         if not rows:
-            embed.add_field(name="📊 Данные", value=empty, inline=False)
+            embed.description = empty
             return embed
 
-        top = rows[:5]
-        rest = rows[5:10]
-        embed.add_field(
-            name="🏆 Топ-5",
-            value="\n".join(self._leaderboard_lines(top, suffix=suffix))[:1024],
-            inline=False,
-        )
-        if rest:
-            embed.add_field(
-                name="📋 Места 6–10",
-                value="\n".join(self._leaderboard_lines(rest, start=6, suffix=suffix))[:1024],
-                inline=False,
-            )
+        lines = self._leaderboard_lines(rows[:10], suffix=suffix)
+        embed.description = "\n".join(lines)[:4096]
         return embed
 
     async def activity_embed(
@@ -216,28 +180,16 @@ class EmbedFactory:
         embed = self._base(
             theme,
             guild,
-            title="📈 Рейтинг активности",
-            color=theme.color_warning,
-            description=(
-                "Очки за **24 часа**:\n"
-                "• Вход — **+2**\n"
-                "• Выход, kill, команда — **+1**"
-            ),
+            title="Активность",
+            color=theme.color_primary,
+            description="Вход +2 · выход/kill/команда +1",
         )
         if not scores:
-            embed.add_field(
-                name="📊 Данные",
-                value="Недостаточно активности за последние 24 часа.",
-                inline=False,
-            )
+            embed.description = (embed.description or "") + "\n\nНедостаточно данных."
             return embed
-        embed.add_field(
-            name="🏆 Топ игроков",
-            value="\n".join(
-                f"{self._rank_label(i)} **{name}** — `{score}` очков"
-                for i, (name, score) in enumerate(scores[:10], start=1)
-            )[:1024],
-            inline=False,
+        embed.description = "\n".join(
+            f"{self._rank_label(i)} **{name}** — {score}"
+            for i, (name, score) in enumerate(scores[:10], start=1)
         )
         return embed
 
@@ -249,43 +201,12 @@ class EmbedFactory:
         formatted = [(f"`{cmd}`", cnt) for cmd, cnt in rows]
         return await self.ranking_embed(
             guild,
-            title="Рейтинг команд",
-            emoji="⌨️",
+            title="Команды",
+            emoji="",
             color_key="info",
             rows=formatted,
             suffix="исп.",
         )
-
-    async def status_embed(
-        self,
-        guild: discord.Guild,
-        *,
-        autorole: bool,
-        erlc_name: str | None,
-        voice_channel: int | None,
-        sync_groups: int,
-        broadcasts: int,
-        rules: int,
-    ) -> discord.Embed:
-        theme = await self.theme(guild.id)
-        embed = self._base(
-            theme,
-            guild,
-            title="⚙️ Настройки сервера",
-            color=theme.color_primary,
-            description=f"Конфигурация **{theme.brand_name}**",
-        )
-        embed.add_field(name="Autorole", value="✅ Включён" if autorole else "—", inline=True)
-        embed.add_field(name="ER:LC", value=erlc_name or "—", inline=True)
-        embed.add_field(
-            name="Voice counter",
-            value=f"<#{voice_channel}>" if voice_channel else "—",
-            inline=True,
-        )
-        embed.add_field(name="Sync groups", value=str(sync_groups), inline=True)
-        embed.add_field(name="Broadcasts", value=str(broadcasts), inline=True)
-        embed.add_field(name="Conditional rules", value=str(rules), inline=True)
-        return embed
 
     async def settings_preview_embed(self, guild: discord.Guild) -> discord.Embed:
         theme = await self.theme(guild.id)
@@ -337,32 +258,151 @@ class EmbedFactory:
     ) -> dict:
         theme = await self.theme(guild.id)
         embed = discord.Embed(
-            title=f"📢 {theme.brand_name}",
-            description=content or "*(без текста)*",
+            title=theme.brand_name,
+            description=f"#{channel_name} · {guild.name}\n\n{content or '—'}",
             color=theme.color_primary,
         )
         if theme.show_timestamp:
             embed.timestamp = datetime.now(timezone.utc)
-        embed.set_author(name=author_name, icon_url=author_icon)
-        embed.add_field(name="📍 Канал", value=f"#{channel_name}", inline=True)
-        embed.add_field(name="🏛️ Сервер", value=guild.name, inline=True)
-        embed.set_footer(text=theme.footer_text)
-        thumb = theme.thumbnail_url
-        if not thumb and theme.use_guild_icon and guild.icon:
-            thumb = guild.icon.url
-        if thumb:
-            embed.set_thumbnail(url=thumb)
+        if theme.footer_text:
+            embed.set_footer(text=theme.footer_text)
         if image_url:
             embed.set_image(url=image_url)
         elif attachment_urls:
-            embed.add_field(
-                name="📎 Вложения",
-                value="\n".join(attachment_urls[:5])[:1024],
-                inline=False,
-            )
+            embed.description = (embed.description or "") + "\n\n" + "\n".join(attachment_urls[:5])[:500]
         return {
             "username": theme.brand_name,
             "avatar_url": guild.icon.url if guild.icon else None,
             "embeds": [embed.to_dict()],
             "allowed_mentions": {"parse": []},
         }
+
+    async def ticket_panel_embed(self, guild: discord.Guild) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        categories = await self.db.list_ticket_categories(guild.id)
+        config = await self.db.get_ticket_config(guild.id)
+
+        lines = [f"{c['name']}" + (f" — {c['description']}" if c.get("description") else "") for c in categories]
+        max_open = int(config["max_open_per_user"])
+        embed = self._base(
+            theme,
+            guild,
+            title="Тикеты",
+            color=theme.color_primary,
+            description=(
+                "Выберите тему в меню.\n\n"
+                + ("\n".join(lines) if lines else "Категории не настроены")
+                + f"\n\nЛимит: {max_open} открытых на человека."
+            ),
+        )
+        return embed
+
+    async def ticket_welcome_embed(
+        self,
+        guild: discord.Guild,
+        *,
+        ticket_id: int,
+        ticket_number: int,
+        category,
+        opener: discord.Member,
+    ) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        embed = self._base(
+            theme,
+            guild,
+            title=f"Тикет #{ticket_number}",
+            color=theme.color_primary,
+            description=(
+                f"{opener.mention} · {category['name']}\n"
+                f"ID `{ticket_id}`\n\n"
+                "Опишите проблему."
+            ),
+        )
+        return embed
+
+    async def ticket_closed_embed(
+        self,
+        guild: discord.Guild,
+        *,
+        ticket: dict,
+        ticket_number: str,
+        category,
+        closed_by: discord.Member,
+        reason: str,
+    ) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        cat_label = category["name"] if category else "—"
+        embed = self._base(
+            theme,
+            guild,
+            title="Тикет закрыт",
+            color=theme.color_primary,
+            description=(
+                f"{ticket_number}\n"
+                f"<@{ticket['opener_id']}> · закрыл {closed_by.mention}\n"
+                f"{cat_label}\n\n"
+                f"{reason[:1024] or '—'}"
+            ),
+        )
+        return embed
+
+    async def ticket_settings_embed(self, guild: discord.Guild) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        config = await self.db.get_ticket_config(guild.id)
+        staff = await self.db.list_ticket_staff_roles(guild.id)
+        categories = await self.db.list_ticket_categories(guild.id, enabled_only=False)
+        stats = await self.db.ticket_statistics(guild.id)
+
+        cat_ch = guild.get_channel(int(config["discord_category_id"])) if config["discord_category_id"] else None
+        log_ch = guild.get_channel(int(config["log_channel_id"])) if config["log_channel_id"] else None
+        panel_ch = guild.get_channel(int(config["panel_channel_id"])) if config["panel_channel_id"] else None
+
+        embed = self._base(
+            theme,
+            guild,
+            title="🎫 Настройки тикетов",
+            color=theme.color_info,
+        )
+        embed.add_field(
+            name="Каналы",
+            value=(
+                f"**Категория Discord:** {cat_ch.mention if cat_ch else '—'}\n"
+                f"**Логи:** {log_ch.mention if log_ch else '—'}\n"
+                f"**Панель:** {panel_ch.mention if panel_ch else '—'}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Staff-роли",
+            value=" ".join(f"<@&{r}>" for r in staff) if staff else "—",
+            inline=False,
+        )
+        embed.add_field(
+            name="Категории тикетов",
+            value=(
+                "\n".join(
+                    f"`#{c['id']}` {c['emoji']} {c['name']}" for c in categories[:8]
+                )
+                if categories
+                else "—"
+            )[:1024],
+            inline=False,
+        )
+        embed.add_field(
+            name="Статистика",
+            value=(
+                f"Открыто: **`{stats.get('open_count', 0)}`** · "
+                f"Закрыто: **`{stats.get('closed_count', 0)}`**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="Шаблон имени",
+            value=(
+                f"`{config['name_template']}`\n"
+                "🟢 открыт · 🟡 в работе · 🔴 закрыт\n"
+                "Пример: `・🟢・поддержка-1054`"
+            ),
+            inline=False,
+        )
+        return embed

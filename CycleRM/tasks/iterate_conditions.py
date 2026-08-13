@@ -147,21 +147,20 @@ async def iterate_conditions(bot):
                     logic_gates.append(item.get("LogicGate"))
 
                 new_conditions = []
-                if len(conditions) > 0 and len(logic_gates) > 0:
-                    for idx, (condition, logic_gate) in enumerate(
-                        dict(zip(conditions, logic_gates)).items()
-                    ):
+                if len(conditions) > 1 and len(logic_gates) > 0:
+                    new_conditions.append(conditions[0])
+                    for idx in range(1, len(conditions)):
+                        logic_gate = logic_gates[idx] if idx < len(logic_gates) else None
+                        prev = new_conditions[-1]
+                        cur = conditions[idx]
                         if logic_gate is None:
-                            new_conditions.append(condition)
-                            continue
-                        if logic_gate.upper() == "AND":
-                            new_conditions.append(
-                                condition is True and conditions[idx - 1] is True
-                            )
-                        if logic_gate.upper() == "OR":
-                            new_conditions.append(
-                                condition is True or conditions[idx - 1] is True
-                            )
+                            new_conditions.append(cur)
+                        elif str(logic_gate).upper() == "AND":
+                            new_conditions.append(prev is True and cur is True)
+                        elif str(logic_gate).upper() == "OR":
+                            new_conditions.append(prev is True or cur is True)
+                        else:
+                            new_conditions.append(cur)
                 else:
                     new_conditions = conditions
                     

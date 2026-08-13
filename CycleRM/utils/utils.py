@@ -471,9 +471,10 @@ async def failure_embed(
 async def new_failure_embed(
     ctx: commands.Context, title: str, description: str, **kwargs
 ) -> discord.Message:
-    msg = await ctx.send(
-        embed=discord.Embed(title=title, description=description, color=BLANK_COLOR)
-    )
+    from utils.rulc_embeds import error_embed
+
+    guild_name = ctx.guild.name if ctx.guild else None
+    msg = await ctx.send(embed=error_embed(title, description, guild_name=guild_name), **kwargs)
     return msg
 
 
