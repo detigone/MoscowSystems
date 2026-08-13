@@ -26,6 +26,14 @@ def _allowed(interaction: discord.Interaction, bot) -> bool:
     return is_config_user(bot, interaction.user.id)
 
 
+def _ticket_admin(interaction: discord.Interaction, bot) -> bool:
+    if is_config_user(bot, interaction.user.id):
+        return True
+    if isinstance(interaction.user, discord.Member):
+        return interaction.user.guild_permissions.manage_guild
+    return False
+
+
 async def _deny(interaction: discord.Interaction) -> None:
     if not interaction.response.is_done():
         await interaction.response.send_message("Нет доступа.", ephemeral=True)
@@ -280,6 +288,12 @@ class ConfigBaseView(discord.ui.View):
         self.bot = bot
         self.add_item(BackButton())
 
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not _allowed(interaction, self.bot):
+            await _deny(interaction)
+            return False
+        return True
+
 
 class MainMenuView(discord.ui.View):
     def __init__(self, bot) -> None:
@@ -287,6 +301,12 @@ class MainMenuView(discord.ui.View):
         self.bot = bot
         self.add_item(SectionSelect(bot))
         self.add_item(RefreshButton(bot))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if not _allowed(interaction, self.bot):
+            await _deny(interaction)
+            return False
+        return True
 
 
 class RefreshButton(discord.ui.Button):
@@ -998,10 +1018,42 @@ async def _build_tickets_view(bot, guild: discord.Guild) -> discord.ui.View:
 
         def __init__(self) -> None:
             super().__init__(bot)
-            self.add_item(PublishTicketPanelButton(bot))
+            self.add_item(TicketPanelChannelSelect(bot))
             self.add_item(TicketSettingsButton(bot))
 
+        async def interaction_check(self, interaction: discord.Interaction) -> bool:
+            if not _ticket_admin(interaction, self.bot):
+                await _deny(interaction)
+                return False
+            return True
+
     return TicketsConfigView()
+
+
+class TicketPanelChannelSelect(discord.ui.ChannelSelect):
+    def __init__(self, bot) -> None:
+        super().__init__(
+            placeholder="📨 Канал для панели тикетов…",
+            channel_types=[discord.ChannelType.text],
+            min_values=1,
+            max_values=1,
+            row=1,
+        )
+        self.bot = bot
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not _ticket_admin(interaction, self.bot):
+            return await _deny(interaction)
+        channel = self.values[0]
+        if not isinstance(channel, discord.TextChannel) or not interaction.guild:
+            await interaction.response.send_message("Нужен текстовый канал.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        msg = await self.bot.tickets.post_panel(interaction.guild, channel)
+        await interaction.followup.send(
+            f"✅ Панель: {channel.mention} · [ссылка]({msg.jump_url})",
+            ephemeral=True,
+        )
 
 
 class PublishTicketPanelButton(discord.ui.Button):
@@ -1064,7 +1116,7 @@ class TicketSettingsButton(discord.ui.Button):
         self.bot = bot
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        if not _allowed(interaction, self.bot):
+        if not _ticket_admin(interaction, self.bot):
             return await _deny(interaction)
         embed = await self.bot.embeds.ticket_settings_embed(interaction.guild)
         await interaction.response.send_message(embed=embed, ephemeral=True)

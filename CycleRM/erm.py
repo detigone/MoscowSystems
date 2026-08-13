@@ -361,46 +361,40 @@ class Bot(commands.AutoShardedBot):
             logging.info("Starting the Check Reminders task...")
         else:
             logging.warn("Reminders disabled. Not running check reminders task")
-        await asyncio.sleep(30)
-        check_loa.start(bot)
-        logging.info("Starting the Check LOA task...")
-        await asyncio.sleep(30)
-        iterate_ics.start(bot)
-        logging.info("Starting the Iterate ICS task...")
-        await asyncio.sleep(30)
-        iterate_prc_logs.start(bot)
-        logging.info("Starting the Iterate PRC Logs task...")
-        await asyncio.sleep(30)
-        statistics_check.start(bot)
-        logging.info("Starting the Statistics Check task...")
-        await asyncio.sleep(30)
-        tempban_checks.start(bot)
-        logging.info("Starting the Tempban Checks task...")
-        await asyncio.sleep(30)
-        check_whitelisted_car.start(bot)
-        logging.info("Starting the Check Whitelisted Car task...")
-        if self.environment != "CUSTOM":
-            await asyncio.sleep(30)
-            change_status.start(bot)
-        logging.info("Starting the Change Status task...")
-        await asyncio.sleep(30)
-        process_scheduled_pms.start(bot)
-        logging.info("Starting the Process Scheduled PMs task...")
-        await asyncio.sleep(30)
-        sync_weather.start(bot)
-        logging.info("Starting the Sync Weather task...")
-        await asyncio.sleep(30)
+
+        staggered: list[tuple[int, object, str]] = [
+            (0, check_loa, "Check LOA"),
+            (2, iterate_ics, "Iterate ICS"),
+            (4, iterate_prc_logs, "Iterate PRC Logs"),
+            (6, statistics_check, "Statistics Check"),
+            (8, tempban_checks, "Tempban Checks"),
+            (10, check_whitelisted_car, "Check Whitelisted Car"),
+            (12, process_scheduled_pms, "Process Scheduled PMs"),
+            (14, sync_weather, "Sync Weather"),
+        ]
         if self.actions_enabled:
-            iterate_conditions.start(bot)
-            logging.info("Starting the Iterate Conditions task...")
+            staggered.append((16, iterate_conditions, "Iterate Conditions"))
         else:
             logging.info("Actions task is disabled (ACTIONS_ENABLED=FALSE)")
-        await asyncio.sleep(30)
-        prc_automations.start(bot)
-        logging.info("Starting the ER:LC Discord Checks task...")
-        await asyncio.sleep(30)
-        mc_discord_checks.start(bot)
-        logging.info("Starting the MC Discord Checks task...")
+        staggered.extend(
+            [
+                (18, prc_automations, "PRC Automations"),
+                (20, mc_discord_checks, "MC Discord Checks"),
+            ]
+        )
+
+        async def _launch(delay: int, task_fn, label: str) -> None:
+            if delay:
+                await asyncio.sleep(delay)
+            task_fn.start(bot)
+            logging.info("Starting the %s task...", label)
+
+        await asyncio.gather(*[_launch(d, fn, label) for d, fn, label in staggered])
+
+        if self.environment != "CUSTOM":
+            change_status.start(bot)
+            logging.info("Starting the Change Status task...")
+
         logging.info("All tasks are now running!")
 
 

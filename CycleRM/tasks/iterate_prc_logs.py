@@ -219,6 +219,8 @@ async def process_guild(bot, items, semaphore):
 
 @tasks.loop(minutes=7, reconnect=True)
 async def iterate_prc_logs(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     if bot.environment == "PRODUCTION":
         await iterate_prc_logs_global(bot)
     else:

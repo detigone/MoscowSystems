@@ -39,5 +39,9 @@ DEFAULT_POINT_RULES = (
     ("warning", 1),
     ("kick", 3),
     ("ban", 10),
+    ("tempban", 10),
     ("bolo", 5),
+    ("demorgan", 5),
+    ("jail", 5),
+    ("note", 0),
 )

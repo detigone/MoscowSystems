@@ -33,7 +33,8 @@ class ErlcStatsService:
             logger.exception("Player snapshot failed for guild %s", guild_id)
 
         now = int(time.time())
-        since = now - DAY
+        watermark = await self.db.get_max_event_ts(guild_id)
+        since = max(watermark - 120, now - DAY) if watermark else now - DAY
 
         try:
             join_logs = await self.erlc.fetch_logs(guild_id, "join")

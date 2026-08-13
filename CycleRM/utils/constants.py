@@ -66,13 +66,21 @@ Colour constants — aligned with shared/rulc_theme (MoscowSystems/shared).
 BLANK_COLOR = 0x2B2D31
 blank_color = BLANK_COLOR  # Redundancy
 
-# CycleRM brand palette (голубой вместо красного ERM)
+try:
+    from rulc_theme.tokens import PALETTE as _PALETTE
+
+    BLANK_COLOR = _PALETTE.neutral
+    blank_color = BLANK_COLOR
+    ERROR_COLOR = _PALETTE.danger
+except ImportError:
+    ERROR_COLOR = 0xED4245
+
+# CycleRM brand palette (голубой акцент)
 BRAND_COLOR = 0x4FC3F7
 BRAND_COLOR_DARK = 0x0288D1
 
 GREEN_COLOR = discord.Colour.brand_green()
-RED_COLOR = BRAND_COLOR  # legacy name used across the fork
-ERROR_COLOR = BRAND_COLOR_DARK
+RED_COLOR = ERROR_COLOR
 ORANGE_COLOR = discord.Colour.orange()
 
 SERVER_CONDITIONS = {

@@ -36,7 +36,7 @@ async def require_moderation_staff(
             await interaction.response.send_message(msg, ephemeral=ephemeral)
         return False
     if not is_moderation_staff(interaction.user, settings):
-        msg = "Только для staff."
+        msg = "Нужны права модератора или администратора."
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=ephemeral)
         else:

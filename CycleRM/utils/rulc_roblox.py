@@ -48,21 +48,25 @@ async def _post(path: str, payload: dict[str, Any]) -> bool:
 
 async def sync_punishment_created(warning) -> bool:
     """Push new punishment to Roblox bot (points assigned there)."""
-    return await _post(
-        "/internal/punishment",
-        {
-            "guild_id": warning.guild_id,
-            "cycle_case_id": str(warning.id),
-            "cycle_snowflake": warning.snowflake,
-            "roblox_id": warning.user_id,
-            "roblox_name": warning.username,
-            "type": warning.warning_type,
-            "reason": warning.reason,
-            "staff_discord_id": warning.moderator_id,
-            "staff_name": warning.moderator_name,
-            "created_at": int(warning.time_epoch),
-        },
-    )
+    payload: dict[str, Any] = {
+        "guild_id": warning.guild_id,
+        "cycle_case_id": str(warning.id),
+        "cycle_snowflake": warning.snowflake,
+        "roblox_id": warning.user_id,
+        "roblox_name": warning.username,
+        "type": warning.warning_type,
+        "reason": warning.reason,
+        "staff_discord_id": warning.moderator_id,
+        "staff_name": warning.moderator_name,
+        "created_at": int(warning.time_epoch),
+    }
+    if warning.until_epoch:
+        from datetime import datetime, timezone
+
+        payload["expires_at"] = datetime.fromtimestamp(
+            int(warning.until_epoch), tz=timezone.utc
+        ).strftime("%Y-%m-%d %H:%M:%S")
+    return await _post("/internal/punishment", payload)
 
 
 async def sync_punishment_revoked(warning, manager: Any) -> bool:

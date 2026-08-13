@@ -60,12 +60,11 @@ async def tempban_checks(bot):
                 except Exception:
                     continue
 
-            punishment_item["CheckExecuted"] = True
-            await bot.punishments.update_by_id(punishment_item)
-
             if punishment_item["UserID"] not in [
                 i.user_id for i in cached_servers[punishment_item["Guild"]]
             ]:
+                punishment_item["CheckExecuted"] = True
+                await bot.punishments.update_by_id(punishment_item)
                 continue
 
             sorted_punishments = sorted(
@@ -88,11 +87,15 @@ async def tempban_checks(bot):
                 new_sorted_punishments.append(item)
 
             if any([i["Type"] in ["Ban", "Temporary Ban"] for i in new_sorted_punishments]):
+                punishment_item["CheckExecuted"] = True
+                await bot.punishments.update_by_id(punishment_item)
                 continue
 
             await bot.prc_api.unban_user(
                 punishment_item["Guild"], punishment_item["UserID"]
             )
+            punishment_item["CheckExecuted"] = True
+            await bot.punishments.update_by_id(punishment_item)
     except PyMongoError as exc:
         logging.warning("tempban_checks skipped: %s", exc)
         return

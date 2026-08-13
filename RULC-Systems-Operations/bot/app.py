@@ -13,8 +13,11 @@ from bot.services.conditional_roles import ConditionalRoleService
 from bot.services.embeds import EmbedFactory
 from bot.services.erlc import ErlcService
 from bot.services.erlc_stats import ErlcStatsService
+from bot.services.mod_calls import ModCallService
 from bot.services.role_sync import RoleSyncService
+from bot.services.secrets_store import SecretsStore
 from bot.services.tickets import TicketService
+from bot.services.ticket_automation import TicketAutomation
 from bot.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -28,6 +31,7 @@ EXTENSIONS: tuple[str, ...] = (
     "bot.cogs.config",
     "bot.cogs.erlc",
     "bot.cogs.tickets",
+    "bot.cogs.mod_calls",
     "bot.cogs.events.sync",
     "bot.cogs.events.guild",
     "bot.cogs.events.broadcast",
@@ -39,7 +43,10 @@ class RoleSyncBot(commands.Bot):
     def __init__(self, settings: Settings) -> None:
         super().__init__(command_prefix="!", intents=INTENTS)
         self.settings = settings
-        self.db = Database(str(settings.database_path))
+        self.db = Database(
+            str(settings.database_path),
+            secrets=SecretsStore(settings.secrets_key),
+        )
         self.embeds: EmbedFactory
         self.role_sync: RoleSyncService
         self.erlc: ErlcService
@@ -48,6 +55,8 @@ class RoleSyncBot(commands.Bot):
         self.conditional_roles: ConditionalRoleService
         self.broadcast: BroadcastService
         self.tickets: TicketService
+        self.ticket_automation: TicketAutomation
+        self.mod_calls: ModCallService
 
     async def setup_hook(self) -> None:
         self.settings.database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -67,6 +76,8 @@ class RoleSyncBot(commands.Bot):
         self.conditional_roles = ConditionalRoleService(self.db)
         self.broadcast = BroadcastService(self.db, self.embeds)
         self.tickets = TicketService(self)
+        self.ticket_automation = TicketAutomation(self)
+        self.mod_calls = ModCallService(self)
 
         for extension in EXTENSIONS:
             await self.load_extension(extension)

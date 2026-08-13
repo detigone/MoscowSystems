@@ -13,6 +13,7 @@ from sentry_sdk import capture_exception, push_scope
 from aiohttp import ClientConnectorSSLError
 from decouple import config
 from utils.constants import BLANK_COLOR, ERROR_COLOR
+from utils.rulc_embeds import error_embed, panel_embed
 from utils.utils import error_gen, GuildCheckFailure
 from utils.prc_api import ServerLinkNotFound, ResponseFailure
 
@@ -35,10 +36,9 @@ class OnCommandError(commands.Cog):
         if isinstance(error, commands.CommandOnCooldown):
             return (
                 await ctx.reply(
-                    embed=discord.Embed(
-                        title="Cooldown",
-                        description=f"This command is on cooldown. Please try again in {error.retry_after:.2f} seconds.",
-                        color=BLANK_COLOR,
+                    embed=panel_embed(
+                        "Cooldown",
+                        f"This command is on cooldown. Please try again in {error.retry_after:.2f} seconds.",
                     )
                 )
                 if not do_not_send
@@ -60,10 +60,9 @@ class OnCommandError(commands.Cog):
         ):
             return (
                 await ctx.reply(
-                    embed=discord.Embed(
-                        title="Connection Error",
-                        description="The server disconnected without sending a response. Your issue will be fixed if you try again.",
-                        color=BLANK_COLOR,
+                    embed=panel_embed(
+                        "Connection Error",
+                        "The server disconnected without sending a response. Your issue will be fixed if you try again.",
                     )
                 )
                 if not do_not_send
@@ -73,10 +72,9 @@ class OnCommandError(commands.Cog):
         if isinstance(error, httpcore.ConnectTimeout):
             return (
                 await ctx.reply(
-                    embed=discord.Embed(
-                        title="HTTP Error",
-                        description="I could not connect to the ROBLOX API. Please try again later.",
-                        color=BLANK_COLOR,
+                    embed=error_embed(
+                        "HTTP Error",
+                        "I could not connect to the ROBLOX API. Please try again later.",
                     )
                 )
                 if not do_not_send

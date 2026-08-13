@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 import logging
 from typing import TYPE_CHECKING
 
 import discord
+
+from bot.services.tickets import make_transcript_files
 
 if TYPE_CHECKING:
     from bot.app import RoleSyncBot
@@ -34,16 +37,43 @@ class CloseTicketModal(discord.ui.Modal, title="Закрытие тикета"):
         member = interaction.user
         if not isinstance(member, discord.Member):
             return
-        if not await self.bot.tickets.can_access_ticket(member, dict(ticket)):
+        ticket_dict = dict(ticket)
+        if not await self.bot.tickets.can_access_ticket(member, ticket_dict):
             await interaction.response.send_message("Нет доступа.", ephemeral=True)
+            return
+        if not await self.bot.tickets.can_close_ticket(member, ticket_dict):
+            await interaction.response.send_message(
+                "Закрыть тикет может только staff.",
+                ephemeral=True,
+            )
             return
 
         await interaction.response.defer()
         await self.bot.tickets.close_ticket_channel(
             interaction,
-            dict(ticket),
+            ticket_dict,
             reason=str(self.reason.value),
         )
+
+
+class OpenTicketModal(discord.ui.Modal, title="Новый тикет"):
+    details = discord.ui.TextInput(
+        label="Суть обращения",
+        placeholder="Кратко опишите проблему или вопрос…",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    def __init__(self, bot: RoleSyncBot, category_id: int) -> None:
+        super().__init__()
+        self.bot = bot
+        self.category_id = category_id
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        note = str(self.details.value).strip() or None
+        await self.bot.tickets.open_ticket(interaction, self.category_id, user_note=note)
 
 
 class TicketControlView(discord.ui.View):
@@ -79,6 +109,12 @@ class TicketControlView(discord.ui.View):
         if not await self.bot.tickets.can_access_ticket(interaction.user, ticket):
             await interaction.response.send_message("Нет доступа.", ephemeral=True)
             return
+        if not await self.bot.tickets.can_close_ticket(interaction.user, ticket):
+            await interaction.response.send_message(
+                "Закрыть тикет может только staff.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_modal(CloseTicketModal(self.bot))
 
     @discord.ui.button(
@@ -97,24 +133,75 @@ class TicketControlView(discord.ui.View):
         if not await self.bot.tickets.is_staff(interaction.user, ticket["guild_id"]):
             await interaction.response.send_message("Только для staff.", ephemeral=True)
             return
-        if ticket.get("claimed_by_id") == interaction.user.id:
-            await interaction.response.send_message("Вы уже взяли этот тикет.", ephemeral=True)
+        if ticket.get("claimed_by_id"):
+            if ticket.get("claimed_by_id") == interaction.user.id:
+                await interaction.response.send_message("Вы уже взяли этот тикет.", ephemeral=True)
+            else:
+                await interaction.response.send_message(
+                    f"Тикет уже в работе у <@{ticket['claimed_by_id']}>.",
+                    ephemeral=True,
+                )
             return
 
-        await self.bot.db.claim_ticket(int(ticket["id"]), interaction.user.id)
+        ok = await self.bot.db.claim_ticket(int(ticket["id"]), interaction.user.id)
+        if not ok:
+            fresh = await self.bot.db.get_ticket(int(ticket["id"]))
+            claimer = fresh["claimed_by_id"] if fresh else None
+            msg = (
+                f"Тикет уже взял <@{claimer}>."
+                if claimer
+                else "Не удалось взять тикет."
+            )
+            await interaction.response.send_message(msg, ephemeral=True)
+            return
         ticket["claimed_by_id"] = interaction.user.id
         if isinstance(interaction.channel, discord.TextChannel):
             await self.bot.tickets.rename_ticket_channel(interaction.channel, ticket, "claimed")
+            await self.bot.tickets.update_welcome_embed(
+                interaction.channel, ticket, claimed_by=interaction.user
+            )
         await interaction.response.send_message(
             f"✋ {interaction.user.mention} взял тикет в работу.",
         )
+
+    @discord.ui.button(
+        label="Отпустить",
+        style=discord.ButtonStyle.secondary,
+        emoji="↩",
+        custom_id="ticket:unclaim",
+        row=0,
+    )
+    async def unclaim_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        ticket = await self._ticket(interaction)
+        if not ticket:
+            return
+        if not isinstance(interaction.user, discord.Member):
+            return
+        claimer_id = ticket.get("claimed_by_id")
+        if not claimer_id:
+            await interaction.response.send_message("Тикет ещё не взят.", ephemeral=True)
+            return
+        is_claimer = interaction.user.id == claimer_id
+        is_admin = await self.bot.tickets.is_staff(interaction.user, ticket["guild_id"])
+        if not is_claimer and not is_admin:
+            await interaction.response.send_message("Нет доступа.", ephemeral=True)
+            return
+        ok = await self.bot.db.unclaim_ticket(int(ticket["id"]))
+        if not ok:
+            await interaction.response.send_message("Не удалось отпустить тикет.", ephemeral=True)
+            return
+        ticket["claimed_by_id"] = None
+        if isinstance(interaction.channel, discord.TextChannel):
+            await self.bot.tickets.rename_ticket_channel(interaction.channel, ticket, "open")
+            await self.bot.tickets.update_welcome_embed(interaction.channel, ticket, claimed_by=None)
+        await interaction.response.send_message("↩ Тикет снова ожидает staff.")
 
     @discord.ui.button(
         label="Транскрипт",
         style=discord.ButtonStyle.secondary,
         emoji="📋",
         custom_id="ticket:transcript",
-        row=0,
+        row=1,
     )
     async def transcript_button(
         self, interaction: discord.Interaction, _button: discord.ui.Button
@@ -131,17 +218,19 @@ class TicketControlView(discord.ui.View):
             return
 
         await interaction.response.defer(ephemeral=True)
-        text = await self.bot.tickets.build_transcript(interaction.channel)
+        result = await self.bot.tickets.build_transcript(interaction.channel)
+        text = result.text
         if len(text) <= 1900:
-            await interaction.followup.send(f"```\n{text[:1900]}\n```", ephemeral=True)
-        else:
-            import io
-
-            file = discord.File(
-                io.BytesIO(text.encode("utf-8")),
-                filename=f"transcript-{interaction.channel.name}.txt",
+            note = (
+                f"\n\n⚠️ Показаны первые {result.message_count} сообщений."
+                if result.truncated
+                else ""
             )
-            await interaction.followup.send("📋 Транскрипт:", file=file, ephemeral=True)
+            await interaction.followup.send(f"```\n{text[:1900]}\n```{note}", ephemeral=True)
+        else:
+            files = make_transcript_files(text, f"transcript-{interaction.channel.name}")
+            note = " ⚠️ Обрезано." if result.truncated else ""
+            await interaction.followup.send(f"📋 Транскрипт:{note}", files=files, ephemeral=True)
 
     @discord.ui.button(
         label="Помощь",
@@ -152,11 +241,11 @@ class TicketControlView(discord.ui.View):
     )
     async def help_button(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
         await interaction.response.send_message(
-            "**Команды в тикете:**\n"
-            "`/ticket добавить` — добавить участника\n"
-            "`/ticket убрать` — убрать участника\n"
-            "`/ticket закрыть` — закрыть с причиной\n"
-            "Или используйте кнопки выше.",
+            "**Кнопки:** 🔒 закрыть · ✋ взять · ↩ отпустить · 📋 транскрипт\n\n"
+            "**Команды:**\n"
+            "`/ticket добавить` — участник\n"
+            "`/ticket убрать` — убрать (staff)\n"
+            "`/ticket закрыть` — закрыть с причиной",
             ephemeral=True,
         )
 
@@ -197,8 +286,9 @@ class TicketCategorySelect(discord.ui.Select):
                 ephemeral=True,
             )
             return
-        await interaction.response.defer(ephemeral=True)
-        await self.bot.tickets.open_ticket(interaction, int(self.values[0]))
+        await interaction.response.send_modal(
+            OpenTicketModal(self.bot, int(self.values[0]))
+        )
 
 
 class TicketPanelView(discord.ui.View):
@@ -210,6 +300,6 @@ class TicketPanelView(discord.ui.View):
     @classmethod
     async def build(cls, bot: RoleSyncBot, guild_id: int) -> TicketPanelView:
         view = cls(bot, guild_id)
-        categories = await bot.db.list_ticket_categories(guild_id)
+        categories = await bot.db.list_ticket_categories(guild_id, enabled_only=True)
         view.add_item(TicketCategorySelect(bot, guild_id, categories))
         return view

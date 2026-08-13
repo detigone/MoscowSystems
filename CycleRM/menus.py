@@ -11467,7 +11467,8 @@ class PunishmentManagement(discord.ui.View):
         )
 
         await self.bot.punishments.remove_warnings_by_spec(
-            guild_id=interaction.guild.id
+            guild_id=interaction.guild.id,
+            revoked_by=interaction.user,
         )
 
     @discord.ui.button(
@@ -11520,7 +11521,9 @@ class PunishmentManagement(discord.ui.View):
         )
 
         await self.bot.punishments.remove_warnings_by_spec(
-            guild_id=interaction.guild.id, warning_type=modal.punishment_type.value
+            guild_id=interaction.guild.id,
+            warning_type=modal.punishment_type.value,
+            revoked_by=interaction.user,
         )
 
     @discord.ui.button(
@@ -11588,7 +11591,9 @@ class PunishmentManagement(discord.ui.View):
         )
 
         await self.bot.punishments.remove_warnings_by_spec(
-            guild_id=interaction.guild.id, user_id=roblox_player.id
+            guild_id=interaction.guild.id,
+            user_id=roblox_player.id,
+            revoked_by=interaction.user,
         )
 
 

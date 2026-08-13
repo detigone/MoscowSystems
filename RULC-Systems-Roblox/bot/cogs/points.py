@@ -7,10 +7,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from bot.cogs.helpers import nickname_autocomplete
+from bot.cogs.helpers import nickname_autocomplete, run_staff_command
 from bot.core.checks import require_moderation_staff
 from bot.services.embeds import RobloxEmbedFactory
-from bot.services.roblox_api import fetch_roblox_user
+from bot.services.player_resolve import resolve_roblox_player
 
 if TYPE_CHECKING:
     from bot.app import RobloxBot
@@ -30,9 +30,7 @@ class PointsCog(commands.Cog):
     async def _resolve_player(
         self, guild_id: int, nickname: str
     ) -> tuple[dict | None, int, list]:
-        if not self.bot.http_session:
-            return None, 0, []
-        roblox = await fetch_roblox_user(self.bot.http_session, nickname.strip())
+        roblox = await resolve_roblox_player(self.bot, nickname=nickname, guild_id=guild_id)
         if not roblox:
             return None, 0, []
         rid = int(roblox["id"])
@@ -48,7 +46,12 @@ class PointsCog(commands.Cog):
             await interaction.response.send_message("Только на сервере.", ephemeral=True)
             return
         await interaction.response.defer()
-        roblox, total, breakdown = await self._resolve_player(interaction.guild.id, никнейм)
+        try:
+            roblox, total, breakdown = await self._resolve_player(interaction.guild.id, никнейм)
+        except Exception:
+            logger.exception("/баллы failed for %s", никнейм)
+            await interaction.followup.send("Не удалось получить данные.", ephemeral=True)
+            return
         if not roblox:
             await interaction.followup.send(f"Игрок **`{никнейм}`** не найден.", ephemeral=True)
             return
@@ -68,7 +71,12 @@ class PointsCog(commands.Cog):
             await interaction.response.send_message("Только на сервере.", ephemeral=True)
             return
         await interaction.response.defer()
-        roblox, total, breakdown = await self._resolve_player(interaction.guild.id, никнейм)
+        try:
+            roblox, total, breakdown = await self._resolve_player(interaction.guild.id, никнейм)
+        except Exception:
+            logger.exception("/риск failed for %s", никнейм)
+            await interaction.followup.send("Не удалось получить данные.", ephemeral=True)
+            return
         if not roblox:
             await interaction.followup.send(f"Игрок **`{никнейм}`** не найден.", ephemeral=True)
             return
@@ -81,6 +89,7 @@ class PointsCog(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="топ", description="Топ игроков по активным баллам")
+    @app_commands.default_permissions(moderate_members=True)
     @app_commands.describe(лимит="Сколько игроков показать (1–25)")
     async def top(
         self, interaction: discord.Interaction, лимит: app_commands.Range[int, 1, 25] = 10
@@ -91,11 +100,16 @@ class PointsCog(commands.Cog):
         if not await require_moderation_staff(interaction, self.bot.settings):
             return
         await interaction.response.defer()
-        rows = await self.bot.db.leaderboard(interaction.guild.id, limit=лимит)
-        embed = RobloxEmbedFactory.leaderboard_embed(rows, guild_name=interaction.guild.name)
-        await interaction.followup.send(embed=embed)
+
+        async def work() -> None:
+            rows = await self.bot.db.leaderboard(interaction.guild.id, limit=лимит)
+            embed = RobloxEmbedFactory.leaderboard_embed(rows, guild_name=interaction.guild.name)
+            await interaction.followup.send(embed=embed)
+
+        await run_staff_command(interaction, work, label="топ")
 
     @app_commands.command(name="радар", description="Игроки с высоким количеством баллов")
+    @app_commands.default_permissions(moderate_members=True)
     @app_commands.describe(порог="Минимум баллов для попадания в радар (1–50)")
     async def radar(
         self,
@@ -108,17 +122,22 @@ class PointsCog(commands.Cog):
         if not await require_moderation_staff(interaction, self.bot.settings):
             return
         await interaction.response.defer()
-        rows = await self.bot.db.radar_players(interaction.guild.id, min_points=порог)
-        embed = RobloxEmbedFactory.radar_embed(
-            rows, threshold=порог, guild_name=interaction.guild.name
-        )
-        await interaction.followup.send(embed=embed)
+
+        async def work() -> None:
+            rows = await self.bot.db.radar_players(interaction.guild.id, min_points=порог)
+            embed = RobloxEmbedFactory.radar_embed(
+                rows, threshold=порог, guild_name=interaction.guild.name
+            )
+            await interaction.followup.send(embed=embed)
+
+        await run_staff_command(interaction, work, label="радар")
 
     @app_commands.command(name="сравнить", description="Сравнить баллы двух игроков")
     @app_commands.describe(
         игрок_1="Первый Roblox никнейм",
         игрок_2="Второй Roblox никнейм",
     )
+    @app_commands.autocomplete(игрок_1=nickname_ac, игрок_2=nickname_ac)
     async def compare(
         self,
         interaction: discord.Interaction,
@@ -132,9 +151,16 @@ class PointsCog(commands.Cog):
         if not self.bot.http_session:
             await interaction.followup.send("Бот ещё не готов.", ephemeral=True)
             return
-
-        a = await fetch_roblox_user(self.bot.http_session, игрок_1.strip())
-        b = await fetch_roblox_user(self.bot.http_session, игрок_2.strip())
+        try:
+            a = await resolve_roblox_player(self.bot, nickname=игрок_1.strip())
+            b = await resolve_roblox_player(self.bot, nickname=игрок_2.strip())
+            gid = interaction.guild.id
+            pa = await self.bot.db.sum_points(gid, int(a["id"])) if a else 0
+            pb = await self.bot.db.sum_points(gid, int(b["id"])) if b else 0
+        except Exception:
+            logger.exception("/сравнить failed")
+            await interaction.followup.send("Не удалось получить данные.", ephemeral=True)
+            return
         if not a or not b:
             missing = []
             if not a:
@@ -147,9 +173,6 @@ class PointsCog(commands.Cog):
             )
             return
 
-        gid = interaction.guild.id
-        pa = await self.bot.db.sum_points(gid, int(a["id"]))
-        pb = await self.bot.db.sum_points(gid, int(b["id"]))
         embed = RobloxEmbedFactory.compare_embed(a, pa, b, pb, guild_name=interaction.guild.name)
         await interaction.followup.send(embed=embed)
 

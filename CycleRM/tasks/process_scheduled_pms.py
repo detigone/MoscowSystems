@@ -6,6 +6,8 @@ from utils import prc_api
 
 @tasks.loop(seconds=10)
 async def process_scheduled_pms(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     try:
         logging.info("Processing scheduled PMs.")
         while not bot.scheduled_pm_queue.empty():

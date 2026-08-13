@@ -13,6 +13,52 @@ logger = logging.getLogger(__name__)
 
 _LIKE_ESCAPE = re.compile(r"([%_\\])")
 
+_TYPE_ALIASES: dict[str, str] = {
+    "warning": "warning",
+    "warn": "warning",
+    "kick": "kick",
+    "ban": "ban",
+    "permanent ban": "ban",
+    "permban": "ban",
+    "temporary ban": "tempban",
+    "temp ban": "tempban",
+    "tempban": "tempban",
+    "bolo": "bolo",
+    "demorgan": "demorgan",
+    "jail": "demorgan",
+    "note": "note",
+}
+
+_ACTIVE_PUNISHMENT_SQL = (
+    "revoked_at IS NULL AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))"
+)
+
+
+def normalize_type_key(type_name: str) -> str:
+    key = " ".join(type_name.strip().lower().split())
+    if key in _TYPE_ALIASES:
+        return _TYPE_ALIASES[key]
+    compact = key.replace(" ", "")
+    if compact in _TYPE_ALIASES:
+        return _TYPE_ALIASES[compact]
+    return key.replace(" ", "_")
+
+
+def is_active_punishment(row: dict[str, Any]) -> bool:
+    if row.get("revoked_at"):
+        return False
+    expires_at = row.get("expires_at")
+    if not expires_at:
+        return True
+    try:
+        raw = str(expires_at).replace("Z", "+00:00")
+        exp = datetime.fromisoformat(raw)
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return exp > datetime.now(timezone.utc)
+    except ValueError:
+        return True
+
 
 def escape_like(value: str) -> str:
     return _LIKE_ESCAPE.sub(r"\\\1", value)
@@ -26,6 +72,8 @@ class Database:
     async def connect(self) -> None:
         self.conn = await aiosqlite.connect(self.path)
         self.conn.row_factory = aiosqlite.Row
+        await self.conn.execute("PRAGMA journal_mode=WAL")
+        await self.conn.execute("PRAGMA busy_timeout=5000")
         await self.conn.executescript(SCHEMA)
         await self.conn.execute("DROP TABLE IF EXISTS punishments_new")
         await self._migrate_punishment_columns()
@@ -142,13 +190,17 @@ class Database:
     async def points_for_type(self, guild_id: int, type_name: str) -> int:
         await self.ensure_guild(guild_id)
         assert self.conn is not None
-        key = type_name.strip().lower()
+        key = normalize_type_key(type_name)
         cursor = await self.conn.execute(
             "SELECT points FROM point_rules WHERE guild_id = ? AND type_key = ?",
             (guild_id, key),
         )
         row = await cursor.fetchone()
-        return int(row[0]) if row else 0
+        if row:
+            return int(row[0])
+        if key not in {t for t, _ in DEFAULT_POINT_RULES}:
+            logger.debug("Unknown punishment type %r → 0 points (guild %s)", type_name, guild_id)
+        return 0
 
     async def create_punishment(
         self,
@@ -168,7 +220,7 @@ class Database:
     ) -> int | None:
         await self.ensure_guild(guild_id)
         assert self.conn is not None
-        type_key = type_name.strip().lower()
+        type_key = normalize_type_key(type_name)
         points = await self.points_for_type(guild_id, type_key)
 
         if created_at_epoch:
@@ -263,9 +315,9 @@ class Database:
     async def sum_points(self, guild_id: int, roblox_id: int) -> int:
         assert self.conn is not None
         cursor = await self.conn.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(points), 0) FROM punishments
-            WHERE guild_id = ? AND roblox_id = ? AND revoked_at IS NULL
+            WHERE guild_id = ? AND roblox_id = ? AND {_ACTIVE_PUNISHMENT_SQL}
             """,
             (guild_id, roblox_id),
         )
@@ -275,10 +327,10 @@ class Database:
     async def punishment_breakdown(self, guild_id: int, roblox_id: int) -> list[dict[str, Any]]:
         assert self.conn is not None
         cursor = await self.conn.execute(
-            """
+            f"""
             SELECT type_key, COUNT(*) AS qty, COALESCE(SUM(points), 0) AS points
             FROM punishments
-            WHERE guild_id = ? AND roblox_id = ? AND revoked_at IS NULL
+            WHERE guild_id = ? AND roblox_id = ? AND {_ACTIVE_PUNISHMENT_SQL}
             GROUP BY type_key
             ORDER BY points DESC
             """,
@@ -294,6 +346,7 @@ class Database:
         *,
         include_revoked: bool = False,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict[str, Any]]:
         assert self.conn is not None
         revoked_clause = "" if include_revoked else "AND revoked_at IS NULL"
@@ -303,12 +356,31 @@ class Database:
             FROM punishments
             WHERE guild_id = ? AND roblox_id = ? {revoked_clause}
             ORDER BY datetime(created_at) DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (guild_id, roblox_id, limit),
+            (guild_id, roblox_id, limit, offset),
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    async def count_punishments(
+        self,
+        guild_id: int,
+        roblox_id: int,
+        *,
+        include_revoked: bool = True,
+    ) -> int:
+        assert self.conn is not None
+        revoked_clause = "" if include_revoked else "AND revoked_at IS NULL"
+        cursor = await self.conn.execute(
+            f"""
+            SELECT COUNT(*) FROM punishments
+            WHERE guild_id = ? AND roblox_id = ? {revoked_clause}
+            """,
+            (guild_id, roblox_id),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
 
     async def search_names(self, guild_id: int, query: str, limit: int = 15) -> list[str]:
         assert self.conn is not None
@@ -371,12 +443,12 @@ class Database:
     ) -> list[dict[str, Any]]:
         assert self.conn is not None
         cursor = await self.conn.execute(
-            """
+            f"""
             SELECT roblox_id, roblox_name,
                    COALESCE(SUM(points), 0) AS total_points,
                    COUNT(*) AS active_count
             FROM punishments
-            WHERE guild_id = ? AND revoked_at IS NULL
+            WHERE guild_id = ? AND {_ACTIVE_PUNISHMENT_SQL}
             GROUP BY roblox_id
             HAVING total_points >= ?
             ORDER BY total_points DESC, active_count DESC
@@ -410,12 +482,12 @@ class Database:
     async def guild_statistics(self, guild_id: int) -> dict[str, Any]:
         assert self.conn is not None
         cursor = await self.conn.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total_records,
-                SUM(CASE WHEN revoked_at IS NULL THEN 1 ELSE 0 END) AS active_count,
+                SUM(CASE WHEN {_ACTIVE_PUNISHMENT_SQL} THEN 1 ELSE 0 END) AS active_count,
                 SUM(CASE WHEN revoked_at IS NOT NULL THEN 1 ELSE 0 END) AS revoked_count,
-                COALESCE(SUM(CASE WHEN revoked_at IS NULL THEN points ELSE 0 END), 0) AS active_points,
+                COALESCE(SUM(CASE WHEN {_ACTIVE_PUNISHMENT_SQL} THEN points ELSE 0 END), 0) AS active_points,
                 COUNT(DISTINCT roblox_id) AS unique_players,
                 COUNT(DISTINCT staff_discord_id) AS unique_staff
             FROM punishments WHERE guild_id = ?
@@ -426,10 +498,10 @@ class Database:
         stats = dict(row) if row else {}
 
         cursor = await self.conn.execute(
-            """
+            f"""
             SELECT type_key, COUNT(*) AS qty
             FROM punishments
-            WHERE guild_id = ? AND revoked_at IS NULL
+            WHERE guild_id = ? AND {_ACTIVE_PUNISHMENT_SQL}
             GROUP BY type_key
             ORDER BY qty DESC
             LIMIT 5
@@ -439,10 +511,10 @@ class Database:
         stats["top_types"] = [dict(r) for r in await cursor.fetchall()]
 
         cursor = await self.conn.execute(
-            """
+            f"""
             SELECT COUNT(*) FROM (
                 SELECT roblox_id FROM punishments
-                WHERE guild_id = ? AND revoked_at IS NULL
+                WHERE guild_id = ? AND {_ACTIVE_PUNISHMENT_SQL}
                 GROUP BY roblox_id
                 HAVING SUM(points) >= 10
             )
@@ -473,10 +545,10 @@ class Database:
     async def moderator_stats(self, guild_id: int, staff_discord_id: int) -> dict[str, Any]:
         assert self.conn is not None
         cursor = await self.conn.execute(
-            """
+            f"""
             SELECT staff_name,
                    COUNT(*) AS total_cases,
-                   SUM(CASE WHEN revoked_at IS NULL THEN 1 ELSE 0 END) AS active_cases,
+                   SUM(CASE WHEN {_ACTIVE_PUNISHMENT_SQL} THEN 1 ELSE 0 END) AS active_cases,
                    COALESCE(SUM(points), 0) AS points_given
             FROM punishments
             WHERE guild_id = ? AND staff_discord_id = ?

@@ -52,23 +52,34 @@ MONTHS_RU = (
 
 TYPE_DISPLAY: dict[str, str] = {
 
-    "warning": "Warning",
+    "warning": "Предупреждение",
 
-    "kick": "Kick",
+    "kick": "Кик",
 
-    "ban": "Ban",
+    "ban": "Бан",
 
     "bolo": "BOLO",
 
-    "demorgan": "Demorgan",
+    "demorgan": "Деморган",
 
-    "jail": "Demorgan",
+    "jail": "Деморган",
 
-    "tempban": "Temp Ban",
+    "tempban": "Временный бан",
 
-    "note": "Note",
+    "note": "Заметка",
 
 }
+
+POINTS_CAP = 30
+
+PUNISHMENT_CATEGORIES: tuple[tuple[str, str, str], ...] = (
+    ("warning", "Предупреждения", "⚠️"),
+    ("kick", "Кики", "👢"),
+    ("demorgan", "Деморганы", "⛓️"),
+    ("ban", "Баны", "🔨"),
+    ("bolo", "BOLO", "📢"),
+    ("other", "Другие", "📋"),
+)
 
 
 
@@ -137,8 +148,19 @@ def risk_level(points: int) -> RiskLevel:
 
 
 def risk_color(points: int) -> int:
-
     return risk_level(points).color
+
+
+def risk_emoji(points: int) -> str:
+    if points >= 15:
+        return "🔴"
+    if points >= 10:
+        return "🟠"
+    if points >= 5:
+        return "🟡"
+    if points >= 1:
+        return "🟢"
+    return "⚪"
 
 
 
@@ -166,17 +188,172 @@ def to_epoch(value: str | None) -> int | None:
 
 
 SEARCH_ALERTS = {
-    "NoAlerts": "No alerts found for this account!",
-    "AccountAge": "The account age of the user is less than 100 days.",
-    "NotManyFriends": "This user has less than 30 friends.",
-    "HasBOLO": "This user has a BOLO active.",
-    "IsBanned": "This user is banned from Roblox.",
+    "NoAlerts": "✅ Нет алертов для этого аккаунта.",
+    "AccountAge": "🆕 Аккаунт младше **100** дней.",
+    "NotManyFriends": "👥 У пользователя **менее 30** друзей.",
+    "HasBOLO": "📢 Есть **активный BOLO**.",
+    "IsBanned": "🚫 Пользователь **забанен** в Roblox.",
+    "HasActiveBan": "🔨 Есть **активный бан** на сервере.",
+    "HighPoints": "📈 Баллы близки к порогу (**{points}**/30).",
 }
 
 
-def punishment_type_counts(punishments: list[dict[str, Any]]) -> dict[str, int]:
-    counts = {"warning": 0, "kick": 0, "ban": 0, "bolo": 0, "other": 0}
+def _category_key(type_key: str) -> str:
+    key = type_key.strip().lower()
+    if key in {"warning"}:
+        return "warning"
+    if key in {"kick"}:
+        return "kick"
+    if key in {"demorgan", "jail"}:
+        return "demorgan"
+    if key in {"ban", "tempban"}:
+        return "ban"
+    if key in {"bolo"}:
+        return "bolo"
+    return "other"
+
+
+def punishment_category_stats(
+    punishments: list[dict[str, Any]], *, active_only: bool = True
+) -> dict[str, dict[str, int]]:
+    from bot.db import is_active_punishment
+
+    stats = {key: {"count": 0, "points": 0} for key, _, _ in PUNISHMENT_CATEGORIES}
     for row in punishments:
+        if active_only and not is_active_punishment(row):
+            continue
+        cat = _category_key(str(row.get("type_key", "")))
+        stats[cat]["count"] += 1
+        stats[cat]["points"] += int(row.get("points") or 0)
+    return stats
+
+
+def format_points_total(total_points: int) -> str:
+    if total_points <= 0:
+        return "Баллов нет"
+    return f"**{total_points}**/{POINTS_CAP}"
+
+
+def format_points_bar(total_points: int, *, width: int = 10) -> str:
+    if total_points <= 0:
+        return "▱" * width
+    filled = min(width, max(1, round(total_points / POINTS_CAP * width)))
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def build_punishment_summary(
+    punishments: list[dict[str, Any]], *, total_points: int
+) -> str:
+    stats = punishment_category_stats(punishments, active_only=True)
+    risk = risk_level(total_points)
+    header = (
+        f"**Всего баллов:** {format_points_total(total_points)} · {risk.label}\n"
+        f"`{format_points_bar(total_points)}`\n"
+    )
+    lines: list[str] = []
+    for key, label, emoji in PUNISHMENT_CATEGORIES:
+        row = stats[key]
+        lines.append(
+            f"{emoji} **{label}** — {row['count']} шт. · **{row['points']}** б."
+        )
+    return header + "\n".join(lines)
+
+
+def build_search_alerts(
+    roblox: dict[str, Any],
+    punishments: list[dict[str, Any]],
+    *,
+    total_points: int = 0,
+) -> str:
+    from bot.db import is_active_punishment
+
+    created_raw = roblox.get("created")
+    account_young = False
+    if created_raw:
+        created_dt = parse_created_at(str(created_raw))
+        if created_dt:
+            age_days = (datetime.now(timezone.utc) - created_dt).days
+            account_young = age_days < 100
+
+    friends = roblox.get("friendCount")
+    few_friends = friends is not None and int(friends) < 30
+    has_bolo = any(
+        str(p.get("type_key", "")).lower() == "bolo" and is_active_punishment(p)
+        for p in punishments
+    )
+    has_active_ban = any(
+        str(p.get("type_key", "")).lower() in {"ban", "tempban"} and is_active_punishment(p)
+        for p in punishments
+    )
+    is_banned = bool(roblox.get("isBanned"))
+
+    triggered: list[str] = []
+    if is_banned:
+        triggered.append("IsBanned")
+    if has_active_ban:
+        triggered.append("HasActiveBan")
+    if account_young:
+        triggered.append("AccountAge")
+    if few_friends:
+        triggered.append("NotManyFriends")
+    if has_bolo:
+        triggered.append("HasBOLO")
+    if total_points >= 20:
+        triggered.append("HighPoints")
+    if not triggered:
+        triggered.append("NoAlerts")
+    lines: list[str] = []
+    for key in triggered:
+        text = SEARCH_ALERTS[key]
+        if "{points}" in text:
+            text = text.format(points=total_points)
+        lines.append(text)
+    return "\n".join(lines)
+
+
+def roblox_profile_url(roblox_id: int) -> str:
+    return f"https://www.roblox.com/users/{roblox_id}/profile"
+
+
+def format_discord_link(
+    member: discord.Member | None,
+    *,
+    link_source: str | None = None,
+    offserver_id: int | None = None,
+) -> str:
+    if member:
+        if link_source == "bloxlink":
+            return f"{member.mention} · Блокслинк"
+        if link_source == "nickname":
+            return f"{member.mention} · по нику"
+        return member.mention
+    if link_source == "bloxlink_offserver" and offserver_id:
+        return f"<@{offserver_id}> · Блокслинк · не на сервере"
+    return "—"
+
+
+def format_created_ru(roblox: dict[str, Any]) -> str:
+    created_raw = roblox.get("created")
+    if not created_raw:
+        return "—"
+    dt = parse_created_at(str(created_raw))
+    if not dt:
+        return "—"
+    local = dt.astimezone()
+    month = MONTHS_RU[local.month - 1]
+    epoch = int(dt.timestamp())
+    return f"{local.day} {month} {local.year}, {local.hour:02d}:{local.minute:02d} · <t:{epoch}:R>"
+
+
+def punishment_type_counts(
+    punishments: list[dict[str, Any]], *, active_only: bool = True
+) -> dict[str, int]:
+    counts = {"warning": 0, "kick": 0, "ban": 0, "bolo": 0, "other": 0}
+    from bot.db import is_active_punishment
+
+    for row in punishments:
+        if active_only and not is_active_punishment(row):
+            continue
         key = str(row.get("type_key", "")).lower().strip()
         if key == "warning":
             counts["warning"] += 1
@@ -191,58 +368,63 @@ def punishment_type_counts(punishments: list[dict[str, Any]]) -> dict[str, int]:
     return counts
 
 
-def build_search_alerts(roblox: dict[str, Any], punishments: list[dict[str, Any]]) -> str:
-    created_raw = roblox.get("created")
-    account_young = False
-    if created_raw:
-        created_dt = parse_created_at(str(created_raw))
-        if created_dt:
-            age_days = (datetime.now(timezone.utc) - created_dt).days
-            account_young = age_days < 100
-
-    friends = roblox.get("friendCount")
-    few_friends = friends is not None and int(friends) < 30
-    has_bolo = any(str(p.get("type_key", "")).lower() == "bolo" for p in punishments)
-    is_banned = bool(roblox.get("isBanned"))
-
-    triggered: list[str] = []
-    if is_banned:
-        triggered.append("IsBanned")
-    if account_young:
-        triggered.append("AccountAge")
-    if few_friends:
-        triggered.append("NotManyFriends")
-    if has_bolo:
-        triggered.append("HasBOLO")
-    if not triggered:
-        triggered.append("NoAlerts")
-    return "\n".join(SEARCH_ALERTS[key] for key in triggered)
-
-
 def search_punishment_value(punishment: dict[str, Any]) -> str:
+    from bot.db import is_active_punishment
+
     staff_id = punishment.get("staff_discord_id")
     if staff_id:
         moderator = f"<@{int(staff_id)}>"
     else:
         moderator = punishment.get("staff_name") or "—"
 
+    active = is_active_punishment(punishment)
+    revoked = bool(punishment.get("revoked_at"))
+    if revoked:
+        status = "~~отозвано~~"
+    elif not active:
+        status = "истекло"
+    else:
+        status = "**активно**"
+
     lines = [
-        f"> **Moderator:** {moderator}",
-        f"> **Reason:** {punishment.get('reason') or '—'}",
+        f"**Модератор:** {moderator}",
+        f"**Причина:** {punishment.get('reason') or '—'}",
+        f"**Статус:** {status} · **{punishment.get('points', 0)}** б.",
     ]
+    description = punishment.get("description")
+    if description:
+        lines.append(f"**Описание:** {description[:200]}")
     at_epoch = to_epoch(punishment.get("created_at"))
     if at_epoch:
-        lines.append(f"> **At:** <t:{at_epoch}>")
+        lines.append(f"**Выдано:** <t:{at_epoch}:f>")
     until_epoch = to_epoch(punishment.get("expires_at"))
     if until_epoch:
-        lines.append(f"> **Until:** <t:{until_epoch}>")
+        lines.append(f"**До:** <t:{until_epoch}:f>")
+    elif active and str(punishment.get("type_key", "")).lower() in {"ban", "tempban", "bolo", "demorgan", "jail"}:
+        lines.append("**Срок:** бессрочно")
     case_id = punishment.get("cycle_snowflake") or punishment.get("cycle_case_id") or "—"
-    lines.append(f"> **ID:** `{case_id}`")
+    lines.append(f"**ID:** `{case_id}`")
     return "\n".join(lines)
 
 
-def _apply_search_author(embed: discord.Embed, author: discord.User | discord.Member) -> None:
-    embed.set_author(name=author.display_name, icon_url=author.display_avatar.url)
+def _apply_search_player(embed: discord.Embed, roblox: dict[str, Any]) -> None:
+    name = roblox.get("name") or "Игрок"
+    avatar = roblox.get("avatar_url")
+    if avatar:
+        embed.set_author(name=name, icon_url=avatar)
+    else:
+        embed.set_author(name=name)
+
+
+def _apply_search_footer(
+    embed: discord.Embed,
+    *,
+    author: discord.User | discord.Member,
+    page_extra: str = "",
+) -> None:
+    bits = [b for b in (page_extra, f"Запросил: {author.display_name}") if b]
+    if bits:
+        embed.set_footer(text=" · ".join(bits))
 
 
 
@@ -417,51 +599,67 @@ class RobloxEmbedFactory:
         author: discord.User | discord.Member,
         guild_name: str | None = None,
         total_pages: int = 1,
+        history_note: str | None = None,
+        discord_member: discord.Member | None = None,
+        discord_link_source: str | None = None,
+        discord_offserver_id: int | None = None,
     ) -> discord.Embed:
-        """Страница 1 — как CycleRM /search."""
         name = roblox.get("name") or "—"
         rid = int(roblox["id"])
         display = roblox.get("displayName", name)
         friends = roblox.get("friendCount")
-        created_epoch = to_epoch(str(roblox.get("created"))) if roblox.get("created") else None
-        counts = punishment_type_counts(punishments)
-        total = len(punishments)
+        groups = roblox.get("groupCount")
+        risk = risk_level(total_points)
 
-        embed = discord.Embed(title=name, color=COLOR_EMBED)
+        embed = discord.Embed(
+            title=name,
+            url=roblox_profile_url(rid),
+            description=f"**{display}**",
+            color=risk.color,
+        )
         embed.add_field(
-            name="Player Information",
+            name="👤 Информация",
             value=(
-                f"> **Username:** {name}\n"
-                f"> **Display Name:** {display}\n"
-                f"> **User ID:** `{rid}`\n"
-                f"> **Friend Count:** {friends if friends is not None else '—'}\n"
-                f"{f'> **Created At:** <t:{created_epoch}>' if created_epoch else '> **Created At:** —'}"
+                f"**Никнейм:** [{name}]({roblox_profile_url(rid)})\n"
+                f"**Отображаемое имя:** {display}\n"
+                f"**ID:** `{rid}`"
             ),
+            inline=True,
+        )
+        embed.add_field(
+            name="🔗 Связи",
+            value=(
+                f"**Discord:** {format_discord_link(discord_member, link_source=discord_link_source, offserver_id=discord_offserver_id)}\n"
+                f"**Друзья:** {friends if friends is not None else '—'}\n"
+                f"**Группы:** {groups if groups is not None else '—'}"
+            ),
+            inline=True,
+        )
+        embed.add_field(
+            name="📅 Аккаунт",
+            value=f"**Создан:** {format_created_ru(roblox)}",
             inline=False,
         )
         embed.add_field(
-            name="Punishments",
-            value=(
-                f"> **Total Punishments:** {total}\n"
-                f"> **Warnings:** {counts['warning']}\n"
-                f"> **Kicks:** {counts['kick']}\n"
-                f"> **Bans:** {counts['ban']}\n"
-                f"> **BOLOs:** {counts['bolo']}\n"
-                f"> **Other:** {counts['other']}\n"
-                f"> **Points:** {total_points}"
-            ),
+            name="📊 Наказания",
+            value=build_punishment_summary(punishments, total_points=total_points)[:1024],
             inline=False,
         )
         embed.add_field(
-            name="Player Alerts",
-            value=build_search_alerts(roblox, punishments),
+            name="🚨 Алерты",
+            value=build_search_alerts(roblox, punishments, total_points=total_points)[:1024],
             inline=False,
         )
         if roblox.get("avatar_url"):
             embed.set_thumbnail(url=roblox["avatar_url"])
-        _apply_search_author(embed, author)
-        page_hint = f"{1}/{total_pages}" if total_pages > 1 else ""
-        return RobloxEmbedFactory._finish(embed, guild_name, page_hint)
+        _apply_search_player(embed, roblox)
+        page_bits = []
+        if total_pages > 1:
+            page_bits.append(f"{1}/{total_pages}")
+        if history_note:
+            page_bits.append(history_note)
+        _apply_search_footer(embed, author=author, page_extra=" · ".join(page_bits))
+        return embed
 
     @staticmethod
     def punishments_embed(
@@ -473,9 +671,14 @@ class RobloxEmbedFactory:
         author: discord.User | discord.Member,
         guild_name: str | None = None,
     ) -> discord.Embed:
-        """Страницы наказаний — как CycleRM /search."""
         name = roblox.get("name") or "—"
-        embed = discord.Embed(title=name, color=COLOR_EMBED)
+        rid = int(roblox["id"])
+        embed = discord.Embed(
+            title=f"История · {name}",
+            url=roblox_profile_url(rid),
+            description="Активные записи отмечены **жирным** в статусе.",
+            color=COLOR_EMBED,
+        )
         for punishment in punishments:
             field_name = type_label(str(punishment["type_key"]))
             embed.add_field(
@@ -483,10 +686,17 @@ class RobloxEmbedFactory:
                 value=search_punishment_value(punishment)[:1024],
                 inline=False,
             )
+        if not punishments:
+            embed.description = "На этой странице записей нет."
         if roblox.get("avatar_url"):
             embed.set_thumbnail(url=roblox["avatar_url"])
-        _apply_search_author(embed, author)
-        return RobloxEmbedFactory._finish(embed, guild_name, f"{page_index + 1}/{total_pages}")
+        _apply_search_player(embed, roblox)
+        _apply_search_footer(
+            embed,
+            author=author,
+            page_extra=f"{page_index + 1}/{total_pages}",
+        )
+        return embed
 
 
 
@@ -507,29 +717,24 @@ class RobloxEmbedFactory:
     ) -> discord.Embed:
 
         name = roblox.get("name") or "—"
-
+        rid = int(roblox.get("id") or 0)
         risk = risk_level(total_points)
-
-        lines = [f"Итого `{total_points}` · {risk.label}"]
-
+        lines = [
+            f"{risk_emoji(total_points)} **{risk.label}** · {format_points_total(total_points)}",
+            f"`{format_points_bar(total_points)}`",
+        ]
         if breakdown:
-
-            for row in breakdown:
-
+            for row in breakdown[:6]:
                 lines.append(
-
                     f"{type_label(str(row['type_key']))}: {row['qty']} × {row['points']} б."
-
                 )
-
         else:
-
             lines.append("Нет активных наказаний.")
-
-
-
         embed = discord.Embed(title=name, description="\n".join(lines), color=risk.color)
-
+        if roblox.get("avatar_url"):
+            embed.set_thumbnail(url=roblox["avatar_url"])
+        if rid:
+            embed.url = roblox_profile_url(rid)
         return RobloxEmbedFactory._finish(embed, guild_name)
 
 
@@ -569,13 +774,8 @@ class RobloxEmbedFactory:
         for i, row in enumerate(rows, start=1):
 
             lines.append(
-
-                f"{_rank_label(i)} [{row['roblox_name']}]"
-
-                f"(https://www.roblox.com/users/{row['roblox_id']}/profile) — "
-
+                f"{_rank_label(i)} [{row['roblox_name']}](https://www.roblox.com/users/{row['roblox_id']}/profile) — "
                 f"{row['total_points']} б."
-
             )
 
         embed = discord.Embed(title=title, description="\n".join(lines)[:4096], color=COLOR_EMBED)
@@ -623,21 +823,15 @@ class RobloxEmbedFactory:
 
 
         embed = discord.Embed(
-
             title="Сравнение",
-
             description=(
-
                 f"{verdict}\n\n"
-
-                f"{name_a} — {points_a} б. ({risk_level(points_a).label})\n"
-
-                f"{name_b} — {points_b} б. ({risk_level(points_b).label})"
-
+                f"{risk_emoji(points_a)} {name_a} — {format_points_total(points_a)} ({risk_level(points_a).label})\n"
+                f"`{format_points_bar(points_a)}`\n\n"
+                f"{risk_emoji(points_b)} {name_b} — {format_points_total(points_b)} ({risk_level(points_b).label})\n"
+                f"`{format_points_bar(points_b)}`"
             ),
-
             color=COLOR_EMBED,
-
         )
 
         return RobloxEmbedFactory._finish(embed, guild_name)
@@ -715,21 +909,20 @@ class RobloxEmbedFactory:
     ) -> discord.Embed:
 
         risk = risk_level(total_points)
-
         name = roblox.get("name") or "—"
-
-        lines = [f"{risk.label} · {total_points} б."]
-
+        rid = int(roblox.get("id") or 0)
+        lines = [
+            f"{risk_emoji(total_points)} **{risk.label}** · {format_points_total(total_points)}",
+            f"`{format_points_bar(total_points)}`",
+        ]
         if breakdown:
-
             types = ", ".join(type_label(str(r["type_key"])) for r in breakdown[:5])
-
             lines.append(types)
-
-
-
         embed = discord.Embed(title=name, description="\n".join(lines), color=risk.color)
-
+        if roblox.get("avatar_url"):
+            embed.set_thumbnail(url=roblox["avatar_url"])
+        if rid:
+            embed.url = roblox_profile_url(rid)
         return RobloxEmbedFactory._finish(embed, guild_name)
 
 
@@ -759,17 +952,15 @@ class RobloxEmbedFactory:
         for row in rows:
 
             ts = format_datetime_ru(parse_created_at(row.get("created_at")))
-
             revoked = " · отозвано" if row.get("revoked_at") else ""
-
+            staff = row.get("staff_name") or "—"
+            if row.get("staff_discord_id"):
+                staff = f"<@{int(row['staff_discord_id'])}>"
             lines.append(
-
                 f"{type_label(str(row['type_key']))} · "
-
                 f"[{row['roblox_name']}](https://www.roblox.com/users/{row['roblox_id']}/profile)\n"
-
-                f"{row.get('points', 0)} б. · {ts}{revoked} · {row.get('reason') or '—'}"
-
+                f"{row.get('points', 0)} б. · {ts}{revoked}\n"
+                f"Модератор: {staff} · {row.get('reason') or '—'}"
             )
 
         embed = discord.Embed(title="Журнал", description="\n\n".join(lines)[:4096], color=COLOR_EMBED)
@@ -806,7 +997,7 @@ class RobloxEmbedFactory:
 
             f"игроков {stats.get('unique_players', 0)} · "
 
-            f"staff {stats.get('unique_staff', 0)}\n"
+            f"модераторов {stats.get('unique_staff', 0)}\n"
 
             f"Высокий риск (10+): {stats.get('high_risk_players', 0)}"
 
@@ -942,11 +1133,12 @@ class RobloxEmbedFactory:
 
         embed = discord.Embed(
 
-            title="Roblox",
+            title="RU:LC Roblox",
 
             description=(
 
-                "Наказания синхронизируются из CycleRM.\n\n"
+                "Наказания синхронизируются из CycleRM.\n"
+                "Discord↔Roblox — через **Bloxlink**.\n\n"
 
                 "`/поиск` `/баллы` `/риск` `/сравнить`\n"
 

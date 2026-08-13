@@ -108,6 +108,8 @@ async def fetch_weather(session: aiohttp.ClientSession, lat: float, lon: float, 
 
 @tasks.loop(minutes=2, reconnect=True)
 async def sync_weather(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     chosen_filter = {
         "CUSTOM": {"_id": int(config("CUSTOM_GUILD_ID", default=0))},
         "_": {

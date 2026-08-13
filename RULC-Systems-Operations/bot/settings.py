@@ -18,6 +18,7 @@ class Settings:
     dev_guild_ids: list[int]
     database_path: Path
     config_discord_ids: list[int]
+    secrets_key: str | None = None
     project_root: Path = PROJECT_ROOT
 
 
@@ -60,5 +61,6 @@ def load_settings() -> Settings:
         dev_guild_ids=dev_guild_ids,
         database_path=db_path,
         config_discord_ids=config_ids,
+        secrets_key=os.getenv("SECRETS_KEY", "").strip() or None,
         project_root=PROJECT_ROOT,
     )

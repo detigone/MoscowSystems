@@ -342,6 +342,8 @@ class Warnings(Document):
         warning_type: str | None = None,
         moderator_id: int | None = None,
         user_id: int | None = None,
+        *,
+        revoked_by: discord.Member | None = None,
     ):
         """
         Removes a warning from the database by a particular specification. Useful for removing many warnings at one time.
@@ -383,6 +385,36 @@ class Warnings(Document):
         storage = []
         async for i in self.db.find(map):
             storage.append(i)
+
+        manager = revoked_by
+        if manager is None:
+
+            class _SystemRevoker:
+                id = 0
+
+                def __str__(self):
+                    return "CycleRM"
+
+            manager = _SystemRevoker()
+
+        for i in storage:
+            warning = WarningItem(
+                id=i["_id"],
+                snowflake=i["Snowflake"],
+                username=i["Username"],
+                user_id=i["UserID"],
+                warning_type=i["Type"],
+                reason=i["Reason"],
+                moderator_name=i["Moderator"],
+                moderator_id=i["ModeratorID"],
+                guild_id=i["Guild"],
+                time_epoch=i["Epoch"],
+                until_epoch=None if i.get("UntilEpoch") == 0 else i.get("UntilEpoch"),
+            )
+            try:
+                await sync_punishment_revoked(warning, manager)
+            except Exception:
+                pass
             await self.db.delete_one({"_id": i["_id"]})
 
         bulk_writes = []

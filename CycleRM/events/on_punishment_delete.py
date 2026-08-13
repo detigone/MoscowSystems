@@ -3,7 +3,7 @@ from discord.ext import commands
 from bson import ObjectId
 from roblox.client import Client
 from datamodels.Warnings import WarningItem
-from utils.constants import BRAND_COLOR
+from utils.constants import BLANK_COLOR
 from utils.rulc_embeds import finish_embed
 from utils.rulc_roblox import sync_punishment_revoked
 import roblox

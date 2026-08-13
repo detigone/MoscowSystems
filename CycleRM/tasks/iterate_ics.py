@@ -9,6 +9,8 @@ from utils.utils import interpret_content, interpret_embed
 
 @tasks.loop(minutes=15, reconnect=True)
 async def iterate_ics(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     # This will aim to constantly update the Integration Command Storage
     # and the relevant storage data.
 

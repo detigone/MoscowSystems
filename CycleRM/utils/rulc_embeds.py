@@ -1,10 +1,13 @@
-"""RU:LC embed helpers for CycleRM — minimal style."""
+"""RU:LC embed helpers for CycleRM — thin wrapper over shared/rulc_theme."""
 
 from __future__ import annotations
 
 import discord
 
-from utils.constants import BLANK_COLOR, ERROR_COLOR
+from rulc_theme.embeds import finish_minimal, styled_embed
+from rulc_theme.tokens import PALETTE
+
+PRODUCT = "CycleRM"
 
 
 def finish_embed(
@@ -13,30 +16,34 @@ def finish_embed(
     guild_name: str | None = None,
     page: str | None = None,
 ) -> discord.Embed:
-    if page:
-        embed.set_footer(text=page)
-    return embed
+    return finish_minimal(embed, page=page)
 
 
 def panel_embed(
     title: str,
     description: str | None = None,
     *,
-    color: int = BLANK_COLOR,
+    color: int = PALETTE.neutral,
     guild_name: str | None = None,
 ) -> discord.Embed:
-    return finish_embed(
-        discord.Embed(title=title, description=description, color=color),
+    return styled_embed(
+        product=PRODUCT,
+        title=title,
+        description=description,
+        color=color,
         guild_name=guild_name,
     )
 
 
 def log_embed(title: str, *, guild_name: str | None = None) -> discord.Embed:
-    return finish_embed(discord.Embed(title=title, color=BLANK_COLOR), guild_name=guild_name)
+    return styled_embed(product=PRODUCT, title=title, color=PALETTE.neutral, guild_name=guild_name)
 
 
 def error_embed(title: str, description: str, *, guild_name: str | None = None) -> discord.Embed:
-    return finish_embed(
-        discord.Embed(title=title, description=description, color=ERROR_COLOR),
+    return styled_embed(
+        product=PRODUCT,
+        title=title,
+        description=description,
+        color=PALETTE.danger,
         guild_name=guild_name,
     )

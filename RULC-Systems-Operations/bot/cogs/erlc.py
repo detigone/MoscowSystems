@@ -7,6 +7,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.core.checks import is_config_user
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,11 +33,27 @@ class ErlcCog(commands.Cog):
             return False
         return True
 
+    async def _require_erlc_access(self, interaction: discord.Interaction) -> bool:
+        if not interaction.guild:
+            await interaction.response.send_message("Только на сервере.", ephemeral=True)
+            return False
+        member = interaction.user
+        if isinstance(member, discord.Member):
+            if member.guild_permissions.manage_guild or is_config_user(self.bot, member.id):
+                return True
+        await interaction.response.send_message(
+            "Нужны права **Manage Server** или доступ к `/config`.",
+            ephemeral=True,
+        )
+        return False
+
     async def _run_erlc(
         self,
         interaction: discord.Interaction,
         action: Callable[[discord.Interaction], Awaitable[None]],
     ) -> None:
+        if not await self._require_erlc_access(interaction):
+            return
         if not await self._need_erlc(interaction):
             return
         await interaction.response.defer()

@@ -114,7 +114,7 @@ class APIRoutes:
         json_data = await request.json()
         guild_ids = json_data.get("guilds")
         if not guild_ids:
-            return HTTPException(status_code=400, detail="No guild ids given")
+            raise HTTPException(status_code=400, detail="No guild ids given")
 
         guilds = []
         for i in guild_ids:
@@ -467,7 +467,7 @@ class APIRoutes:
             try:
                 member = await guild.fetch_member(user_id)
             except discord.HTTPException:
-                return HTTPException(status_code=404, detail="Member not found")
+                raise HTTPException(status_code=404, detail="Member not found")
         if json_data["status"].lower() == "accepted":
             embed = discord.Embed(
                 title=f"{self.bot.emoji_controller.get_emoji('success')} Priority Request Accepted",
@@ -488,7 +488,7 @@ class APIRoutes:
             await member.send(embed=embed)
             return {"op": 1, "code": 200}
         except discord.HTTPException:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400, detail="Member cannot be direct messaged."
             )
 
@@ -508,10 +508,10 @@ class APIRoutes:
         try:
             channel = await self.bot.fetch_channel(channel_id)
         except discord.HTTPException:
-            return HTTPException(status_code=404, detail="Channel not found")
+            raise HTTPException(status_code=404, detail="Channel not found")
 
         if not channel:
-            return HTTPException(status_code=404, detail="Channel not found")
+            raise HTTPException(status_code=404, detail="Channel not found")
 
         embed = discord.Embed(
             title="New Priority Received",
@@ -546,7 +546,7 @@ class APIRoutes:
                 content, embed=embed, allowed_mentions=discord.AllowedMentions.all()
             )
         except discord.HTTPException:
-            return HTTPException(status_code=404, detail="Channel not found")
+            raise HTTPException(status_code=404, detail="Channel not found")
 
         return {"op": 1, "code": 200}
 
@@ -736,7 +736,7 @@ class APIRoutes:
 
         json_data = await request.json()
         if not json_data.get("Channel"):
-            return HTTPException(status_code=400, detail="Bad Format")
+            raise HTTPException(status_code=400, detail="Bad Format")
 
         channel = await self.bot.fetch_channel(json_data["Channel"])
         embed = discord.Embed(
@@ -970,11 +970,11 @@ class APIRoutes:
         json_data = await request.json()
         guild_id = json_data.get("guild")
         if not guild_id:
-            return HTTPException(status_code=400, detail="Invalid guild")
+            raise HTTPException(status_code=400, detail="Invalid guild")
         guild: discord.Guild = self.bot.get_guild(int(guild_id))
         settings = await self.bot.settings.find_by_id(guild.id)
         if not settings:
-            return HTTPException(status_code=400, detail="Invalid guild")
+            raise HTTPException(status_code=400, detail="Invalid guild")
 
         return settings
 
@@ -993,17 +993,17 @@ class APIRoutes:
             if isinstance(value, dict):
                 settings = await self.bot.settings.find_by_id(guild_id)
                 if not settings:
-                    return HTTPException(status_code=400, detail="Invalid guild")
+                    raise HTTPException(status_code=400, detail="Invalid guild")
                 for k, v in value.items():
                     settings[key][k] = v
         await self.bot.settings.update_by_id(settings)
 
         if not guild_id:
-            return HTTPException(status_code=400, detail="Invalid guild")
+            raise HTTPException(status_code=400, detail="Invalid guild")
         guild: discord.Guild = self.bot.get_guild(int(guild_id))
         settings = await self.bot.settings.find_by_id(guild.id)
         if not settings:
-            return HTTPException(
+            raise HTTPException(
                 status_code=404, detail="Guild does not have settings attribute"
             )
 
@@ -1019,7 +1019,7 @@ class APIRoutes:
         guild_id = json_data.get("guild")
 
         if not guild_id:
-            return HTTPException(status_code=400, detail="Invalid guild")
+            raise HTTPException(status_code=400, detail="Invalid guild")
         guild: discord.Guild = self.bot.get_guild(int(guild_id))
 
         return [
@@ -1037,7 +1037,7 @@ class APIRoutes:
         guild_id = json_data.get("guild")
 
         if not guild_id:
-            return HTTPException(status_code=400, detail="Invalid guild")
+            raise HTTPException(status_code=400, detail="Invalid guild")
         guild: discord.Guild = self.bot.get_guild(int(guild_id))
 
         return [
@@ -1049,7 +1049,7 @@ class APIRoutes:
         json_data = await request.json()
         guild_id = json_data.get("guild")
         # NOTE: This API is deprecated.
-        return HTTPException(status_code=500, detail="This API is deprecated")
+        raise HTTPException(status_code=500, detail="This API is deprecated")
 
         # warning_objects = {}
         # async for document in self.bot.warnings.db.find(
@@ -1314,16 +1314,16 @@ class APIRoutes:
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
         if not authorization:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
 
         base_auth = await validate_authorization(
             self.bot, authorization, disable_static_tokens=False
         )
         if not base_auth:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
         data = request.query_params.get("ObjectId")
         if not data:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400, detail="Didn't provide 'ObjectId' parameter."
             )
 
@@ -1334,16 +1334,16 @@ class APIRoutes:
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
         if not authorization:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
 
         base_auth = await validate_authorization(
             self.bot, authorization, disable_static_tokens=False
         )
         if not base_auth:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
         data = request.query_params.get("ObjectId")
         if not data:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400, detail="Didn't provide 'ObjectId' parameter."
             )
 
@@ -1354,16 +1354,16 @@ class APIRoutes:
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
         if not authorization:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
 
         base_auth = await validate_authorization(
             self.bot, authorization, disable_static_tokens=False
         )
         if not base_auth:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
         data = request.query_params.get("ObjectId")
         if not data:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400, detail="Didn't provide 'ObjectId' parameter."
             )
 
@@ -1374,16 +1374,16 @@ class APIRoutes:
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
         if not authorization:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
 
         base_auth = await validate_authorization(
             self.bot, authorization, disable_static_tokens=False
         )
         if not base_auth:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
         data = request.query_params.get("ObjectId")
         if not data:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400, detail="Didn't provide 'ObjectId' parameter."
             )
 
@@ -1394,17 +1394,17 @@ class APIRoutes:
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
         if not authorization:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
 
         base_auth = await validate_authorization(
             self.bot, authorization, disable_static_tokens=False
         )
 
         if not base_auth:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
         data = request.query_params.get("ObjectId")
         if not data:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400, detail="Didn't provide 'ObjectId' parameter."
             )
 
@@ -1419,17 +1419,17 @@ class APIRoutes:
         self, authorization: Annotated[str | None, Header()], request: Request
     ):
         if not authorization:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
 
         base_auth = await validate_authorization(
             self.bot, authorization, disable_static_tokens=False
         )
         # print(base_auth)
         if not base_auth:
-            return HTTPException(status_code=401, detail="Invalid authorization")
+            raise HTTPException(status_code=401, detail="Invalid authorization")
         data = request.query_params.get("ObjectId")
         if not data:
-            return HTTPException(
+            raise HTTPException(
                 status_code=400, detail="Didn't provide 'ObjectId' parameter."
             )
 
@@ -2157,6 +2157,9 @@ class MyMiddleware:
             return response
 
 
+_api_routes_registered = False
+
+
 class ServerAPI(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -2164,10 +2167,13 @@ class ServerAPI(commands.Cog):
         self.server_task = None
 
     async def start_server(self):
+        global _api_routes_registered
         try:
-            middleware = MyMiddleware(bot=self.bot)
-            api.add_middleware(BaseHTTPMiddleware, dispatch=middleware)
-            api.include_router(APIRoutes(self.bot).router)
+            if not _api_routes_registered:
+                middleware = MyMiddleware(bot=self.bot)
+                api.add_middleware(BaseHTTPMiddleware, dispatch=middleware)
+                api.include_router(APIRoutes(self.bot).router)
+                _api_routes_registered = True
             self.config = uvicorn.Config(
                 "utils.api:api",
                 port=int(config("BIND_PORT", default=5000)),

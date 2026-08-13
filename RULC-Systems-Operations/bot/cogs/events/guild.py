@@ -30,6 +30,10 @@ class GuildEventsCog(commands.Cog):
     async def on_ready(self) -> None:
         for guild in self.bot.guilds:
             await self._register_guild(guild)
+            if hasattr(self.bot, "tickets"):
+                fixed = await self.bot.tickets.sync_orphan_tickets(guild)
+                if fixed:
+                    logger.info("Synced %s orphan tickets in %s", fixed, guild.name)
 
 
 async def setup(bot: commands.Bot) -> None:

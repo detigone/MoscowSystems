@@ -3,11 +3,13 @@ from __future__ import annotations
 import aiosqlite
 
 from bot.db.schema import SCHEMA
+from bot.services.secrets_store import SecretsStore
 
 
 class Database:
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, secrets: SecretsStore | None = None) -> None:
         self.path = path
+        self.secrets = secrets or SecretsStore(None)
         self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
@@ -22,6 +24,35 @@ class Database:
         columns = {row[1] for row in await cursor.fetchall()}
         if "ticket_number" not in columns:
             await self.conn.execute("ALTER TABLE tickets ADD COLUMN ticket_number INTEGER")
+        if "control_message_id" not in columns:
+            await self.conn.execute("ALTER TABLE tickets ADD COLUMN control_message_id INTEGER")
+
+        cursor = await self.conn.execute("PRAGMA table_info(ticket_config)")
+        config_cols = {row[1] for row in await cursor.fetchall()}
+        if "opener_can_close" not in config_cols:
+            await self.conn.execute(
+                "ALTER TABLE ticket_config ADD COLUMN opener_can_close INTEGER NOT NULL DEFAULT 1"
+            )
+        if "idle_close_hours" not in config_cols:
+            await self.conn.execute(
+                "ALTER TABLE ticket_config ADD COLUMN idle_close_hours INTEGER NOT NULL DEFAULT 0"
+            )
+        if "remind_unclaimed_hours" not in config_cols:
+            await self.conn.execute(
+                "ALTER TABLE ticket_config ADD COLUMN remind_unclaimed_hours INTEGER NOT NULL DEFAULT 0"
+            )
+
+        if "last_activity_at" not in columns:
+            await self.conn.execute("ALTER TABLE tickets ADD COLUMN last_activity_at TEXT")
+        if "last_staff_ping_at" not in columns:
+            await self.conn.execute("ALTER TABLE tickets ADD COLUMN last_staff_ping_at TEXT")
+        await self.conn.execute(
+            """
+            UPDATE tickets SET last_activity_at = created_at
+            WHERE last_activity_at IS NULL
+            """
+        )
+
         await self.conn.execute(
             """
             UPDATE ticket_config
@@ -170,6 +201,7 @@ class Database:
         return await cursor.fetchall()
 
     async def set_erlc_server(self, guild_id: int, server_key: str, server_name: str | None) -> None:
+        sealed_key = self.secrets.seal(server_key)
         await self.conn.execute(
             """
             INSERT INTO erlc_servers (guild_id, server_key, server_name, updated_at)
@@ -179,16 +211,21 @@ class Database:
                 server_name = excluded.server_name,
                 updated_at = datetime('now')
             """,
-            (guild_id, server_key, server_name),
+            (guild_id, sealed_key, server_name),
         )
         await self.conn.commit()
 
-    async def get_erlc_server(self, guild_id: int) -> aiosqlite.Row | None:
+    async def get_erlc_server(self, guild_id: int) -> dict | None:
         cursor = await self.conn.execute(
             "SELECT * FROM erlc_servers WHERE guild_id = ?",
             (guild_id,),
         )
-        return await cursor.fetchone()
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        data["server_key"] = self.secrets.open(str(data["server_key"]))
+        return data
 
     async def remove_erlc_server(self, guild_id: int) -> bool:
         cursor = await self.conn.execute(
@@ -433,12 +470,13 @@ class Database:
         name: str,
         webhook_url: str,
     ) -> int:
+        sealed_url = self.secrets.seal(webhook_url)
         cursor = await self.conn.execute(
             """
             INSERT INTO broadcast_targets (source_id, name, webhook_url)
             VALUES (?, ?, ?)
             """,
-            (source_id, name, webhook_url),
+            (source_id, name, sealed_url),
         )
         await self.conn.commit()
         return cursor.lastrowid
@@ -450,13 +488,14 @@ class Database:
         webhook_url: str,
         enabled: bool,
     ) -> None:
+        sealed_url = self.secrets.seal(webhook_url)
         await self.conn.execute(
             """
             UPDATE broadcast_targets
             SET name = ?, webhook_url = ?, enabled = ?
             WHERE id = ?
             """,
-            (name, webhook_url, int(enabled), target_id),
+            (name, sealed_url, int(enabled), target_id),
         )
         await self.conn.commit()
 
@@ -468,7 +507,7 @@ class Database:
         await self.conn.commit()
         return cursor.rowcount > 0
 
-    async def get_broadcast_targets(self, source_id: int) -> list[aiosqlite.Row]:
+    async def get_broadcast_targets(self, source_id: int) -> list[dict]:
         cursor = await self.conn.execute(
             """
             SELECT * FROM broadcast_targets
@@ -477,7 +516,23 @@ class Database:
             """,
             (source_id,),
         )
-        return await cursor.fetchall()
+        rows = await cursor.fetchall()
+        result: list[dict] = []
+        for row in rows:
+            data = dict(row)
+            data["webhook_url"] = self.secrets.open(str(data["webhook_url"]))
+            result.append(data)
+        return result
+
+    async def get_max_event_ts(self, guild_id: int) -> int | None:
+        cursor = await self.conn.execute(
+            "SELECT MAX(event_ts) FROM erlc_log_events WHERE guild_id = ?",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        if not row or row[0] is None:
+            return None
+        return int(row[0])
 
     async def set_voice_counter(
         self,
@@ -704,6 +759,7 @@ class Database:
         return row
 
     async def update_ticket_config(self, guild_id: int, **fields: object) -> None:
+        await self.ensure_ticket_config(guild_id)
         allowed = {
             "discord_category_id",
             "log_channel_id",
@@ -712,6 +768,9 @@ class Database:
             "name_template",
             "max_open_per_user",
             "counter",
+            "opener_can_close",
+            "idle_close_hours",
+            "remind_unclaimed_hours",
         }
         parts: list[str] = []
         values: list[object] = []
@@ -805,12 +864,39 @@ class Database:
             return None
 
     async def remove_ticket_category(self, guild_id: int, category_id: int) -> bool:
+        open_count = await self.count_open_tickets_for_category(guild_id, category_id)
+        if open_count > 0:
+            return False
         cursor = await self.conn.execute(
             "DELETE FROM ticket_categories WHERE guild_id = ? AND id = ?",
             (guild_id, category_id),
         )
         await self.conn.commit()
         return cursor.rowcount > 0
+
+    async def set_ticket_category_enabled(
+        self, guild_id: int, category_id: int, *, enabled: bool
+    ) -> bool:
+        cursor = await self.conn.execute(
+            """
+            UPDATE ticket_categories SET enabled = ?
+            WHERE guild_id = ? AND id = ?
+            """,
+            (int(enabled), guild_id, category_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def count_open_tickets_for_category(self, guild_id: int, category_id: int) -> int:
+        cursor = await self.conn.execute(
+            """
+            SELECT COUNT(*) FROM tickets
+            WHERE guild_id = ? AND category_id = ? AND status = 'open'
+            """,
+            (guild_id, category_id),
+        )
+        row = await cursor.fetchone()
+        return int(row[0]) if row else 0
 
     async def get_ticket_category(self, category_id: int) -> aiosqlite.Row | None:
         cursor = await self.conn.execute(
@@ -840,14 +926,25 @@ class Database:
         opener_name: str,
         subject: str | None = None,
         ticket_number: int | None = None,
+        control_message_id: int | None = None,
     ) -> int:
         cursor = await self.conn.execute(
             """
             INSERT INTO tickets (
-                guild_id, category_id, channel_id, opener_id, opener_name, subject, ticket_number
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                guild_id, category_id, channel_id, opener_id, opener_name,
+                subject, ticket_number, control_message_id, last_activity_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """,
-            (guild_id, category_id, channel_id, opener_id, opener_name, subject, ticket_number),
+            (
+                guild_id,
+                category_id,
+                channel_id,
+                opener_id,
+                opener_name,
+                subject,
+                ticket_number,
+                control_message_id,
+            ),
         )
         await self.conn.commit()
         return int(cursor.lastrowid)
@@ -866,12 +963,61 @@ class Database:
         )
         return await cursor.fetchone()
 
-    async def claim_ticket(self, ticket_id: int, staff_id: int) -> None:
-        await self.conn.execute(
-            "UPDATE tickets SET claimed_by_id = ? WHERE id = ? AND status = 'open'",
+    async def claim_ticket(self, ticket_id: int, staff_id: int) -> bool:
+        cursor = await self.conn.execute(
+            """
+            UPDATE tickets SET claimed_by_id = ?
+            WHERE id = ? AND status = 'open' AND claimed_by_id IS NULL
+            """,
             (staff_id, ticket_id),
         )
         await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def unclaim_ticket(self, ticket_id: int) -> bool:
+        cursor = await self.conn.execute(
+            """
+            UPDATE tickets SET claimed_by_id = NULL
+            WHERE id = ? AND status = 'open' AND claimed_by_id IS NOT NULL
+            """,
+            (ticket_id,),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def set_control_message_id(self, ticket_id: int, message_id: int) -> None:
+        await self.conn.execute(
+            "UPDATE tickets SET control_message_id = ? WHERE id = ?",
+            (message_id, ticket_id),
+        )
+        await self.conn.commit()
+
+    async def touch_ticket_activity(self, channel_id: int) -> None:
+        await self.conn.execute(
+            """
+            UPDATE tickets SET last_activity_at = datetime('now')
+            WHERE channel_id = ? AND status = 'open'
+            """,
+            (channel_id,),
+        )
+        await self.conn.commit()
+
+    async def mark_staff_ping(self, ticket_id: int) -> None:
+        await self.conn.execute(
+            """
+            UPDATE tickets SET last_staff_ping_at = datetime('now')
+            WHERE id = ?
+            """,
+            (ticket_id,),
+        )
+        await self.conn.commit()
+
+    async def guilds_with_open_tickets(self) -> list[int]:
+        cursor = await self.conn.execute(
+            "SELECT DISTINCT guild_id FROM tickets WHERE status = 'open'"
+        )
+        rows = await cursor.fetchall()
+        return [int(r[0]) for r in rows]
 
     async def close_ticket(
         self,
@@ -895,6 +1041,76 @@ class Database:
         )
         await self.conn.commit()
 
+    async def close_ticket_orphan(self, ticket_id: int, *, reason: str) -> bool:
+        cursor = await self.conn.execute(
+            """
+            UPDATE tickets
+            SET status = 'closed',
+                closed_at = datetime('now'),
+                close_reason = ?,
+                transcript = NULL
+            WHERE id = ? AND status = 'open'
+            """,
+            (reason, ticket_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def list_open_tickets(self, guild_id: int) -> list[aiosqlite.Row]:
+        cursor = await self.conn.execute(
+            """
+            SELECT * FROM tickets
+            WHERE guild_id = ? AND status = 'open'
+            ORDER BY datetime(created_at) DESC
+            """,
+            (guild_id,),
+        )
+        return await cursor.fetchall()
+
+    async def list_tickets(
+        self,
+        guild_id: int,
+        *,
+        status: str | None = None,
+        limit: int = 15,
+        offset: int = 0,
+    ) -> list[aiosqlite.Row]:
+        if status:
+            cursor = await self.conn.execute(
+                """
+                SELECT * FROM tickets
+                WHERE guild_id = ? AND status = ?
+                ORDER BY datetime(created_at) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (guild_id, status, limit, offset),
+            )
+        else:
+            cursor = await self.conn.execute(
+                """
+                SELECT * FROM tickets
+                WHERE guild_id = ?
+                ORDER BY datetime(created_at) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (guild_id, limit, offset),
+            )
+        return await cursor.fetchall()
+
+    async def get_ticket_by_number(
+        self, guild_id: int, ticket_number: int
+    ) -> aiosqlite.Row | None:
+        cursor = await self.conn.execute(
+            """
+            SELECT * FROM tickets
+            WHERE guild_id = ? AND ticket_number = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (guild_id, ticket_number),
+        )
+        return await cursor.fetchone()
+
     async def reopen_ticket(self, ticket_id: int) -> None:
         await self.conn.execute(
             """
@@ -916,13 +1132,20 @@ class Database:
             SELECT
                 SUM(CASE WHEN status = 'open' THEN 1 ELSE 0 END) AS open_count,
                 SUM(CASE WHEN status = 'closed' THEN 1 ELSE 0 END) AS closed_count,
+                SUM(CASE WHEN status = 'open' AND claimed_by_id IS NOT NULL THEN 1 ELSE 0 END)
+                    AS claimed_open,
                 COUNT(*) AS total
             FROM tickets WHERE guild_id = ?
             """,
             (guild_id,),
         )
         row = await cursor.fetchone()
-        return dict(row) if row else {"open_count": 0, "closed_count": 0, "total": 0}
+        return dict(row) if row else {
+            "open_count": 0,
+            "closed_count": 0,
+            "claimed_open": 0,
+            "total": 0,
+        }
 
     async def guilds_with_ticket_panels(self) -> list[aiosqlite.Row]:
         cursor = await self.conn.execute(
@@ -932,3 +1155,96 @@ class Database:
             """
         )
         return await cursor.fetchall()
+
+    # --- Mod calls ---
+
+    async def ensure_mod_call_config(self, guild_id: int) -> None:
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO mod_call_config (guild_id) VALUES (?)",
+            (guild_id,),
+        )
+        await self.conn.commit()
+
+    async def get_mod_call_config(self, guild_id: int) -> aiosqlite.Row:
+        await self.ensure_mod_call_config(guild_id)
+        cursor = await self.conn.execute(
+            "SELECT * FROM mod_call_config WHERE guild_id = ?",
+            (guild_id,),
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        return row
+
+    async def update_mod_call_config(self, guild_id: int, **fields: object) -> None:
+        await self.ensure_mod_call_config(guild_id)
+        allowed = {"channel_id", "cooldown_seconds", "enabled"}
+        parts: list[str] = []
+        values: list[object] = []
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            parts.append(f"{key} = ?")
+            values.append(value)
+        if not parts:
+            return
+        values.append(guild_id)
+        await self.conn.execute(
+            f"UPDATE mod_call_config SET {', '.join(parts)} WHERE guild_id = ?",
+            values,
+        )
+        await self.conn.commit()
+
+    async def add_mod_call_role(self, guild_id: int, role_id: int) -> None:
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO mod_call_roles (guild_id, role_id) VALUES (?, ?)",
+            (guild_id, role_id),
+        )
+        await self.conn.commit()
+
+    async def remove_mod_call_role(self, guild_id: int, role_id: int) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM mod_call_roles WHERE guild_id = ? AND role_id = ?",
+            (guild_id, role_id),
+        )
+        await self.conn.commit()
+        return cursor.rowcount > 0
+
+    async def list_mod_call_roles(self, guild_id: int) -> list[int]:
+        cursor = await self.conn.execute(
+            "SELECT role_id FROM mod_call_roles WHERE guild_id = ?",
+            (guild_id,),
+        )
+        rows = await cursor.fetchall()
+        return [int(r[0]) for r in rows]
+
+    async def mod_call_cooldown_remaining(self, guild_id: int, user_id: int) -> int:
+        config = await self.get_mod_call_config(guild_id)
+        cooldown = int(config["cooldown_seconds"] or 0)
+        if cooldown <= 0:
+            return 0
+        cursor = await self.conn.execute(
+            """
+            SELECT CAST(
+                (julianday(datetime('now')) - julianday(last_called_at)) * 86400 AS INTEGER
+            )
+            FROM mod_call_cooldowns
+            WHERE guild_id = ? AND user_id = ?
+            """,
+            (guild_id, user_id),
+        )
+        row = await cursor.fetchone()
+        if not row or row[0] is None:
+            return 0
+        elapsed = int(row[0])
+        return max(0, cooldown - elapsed)
+
+    async def touch_mod_call_cooldown(self, guild_id: int, user_id: int) -> None:
+        await self.conn.execute(
+            """
+            INSERT INTO mod_call_cooldowns (guild_id, user_id, last_called_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET last_called_at = datetime('now')
+            """,
+            (guild_id, user_id),
+        )
+        await self.conn.commit()

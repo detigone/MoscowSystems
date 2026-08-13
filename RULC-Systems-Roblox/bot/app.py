@@ -10,6 +10,7 @@ from discord.ext import commands
 
 from bot.db import Database
 from bot.internal.server import start_internal_server
+from bot.services.bloxlink import BloxlinkClient
 from bot.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -34,12 +35,16 @@ class RobloxBot(commands.Bot):
         self.db = Database(str(settings.database_path))
         self._api_runner: web.AppRunner | None = None
         self.http_session: aiohttp.ClientSession | None = None
+        self.bloxlink: BloxlinkClient | None = None
 
     async def setup_hook(self) -> None:
         self.http_session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=12),
             headers={"User-Agent": "RULC-Systems-Roblox/1.0"},
         )
+        self.bloxlink = BloxlinkClient(self.http_session, self.settings.bloxlink_api_key)
+        if not self.settings.bloxlink_api_key:
+            logger.warning("BLOXLINK_API_KEY not set — Discord↔Roblox via Bloxlink disabled")
         await self.db.connect()
         logger.info("Database: %s", self.settings.database_path)
 

@@ -6,6 +6,8 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from bot.cogs.helpers import run_staff_command
+
 from bot.core.checks import require_moderation_staff
 from bot.services.embeds import RobloxEmbedFactory
 
@@ -18,6 +20,7 @@ class JournalCog(commands.Cog):
         self.bot = bot
 
     @app_commands.command(name="журнал", description="Последние наказания на сервере")
+    @app_commands.default_permissions(moderate_members=True)
     @app_commands.describe(
         количество="Сколько записей показать (3–20)",
         включая_отозванные="Показывать отозванные наказания",
@@ -34,13 +37,17 @@ class JournalCog(commands.Cog):
         if not await require_moderation_staff(interaction, self.bot.settings):
             return
         await interaction.response.defer()
-        rows = await self.bot.db.recent_punishments(
-            interaction.guild.id,
-            limit=количество,
-            include_revoked=включая_отозванные,
-        )
-        embed = RobloxEmbedFactory.journal_embed(rows, guild_name=interaction.guild.name)
-        await interaction.followup.send(embed=embed)
+
+        async def work() -> None:
+            rows = await self.bot.db.recent_punishments(
+                interaction.guild.id,
+                limit=количество,
+                include_revoked=включая_отозванные,
+            )
+            embed = RobloxEmbedFactory.journal_embed(rows, guild_name=interaction.guild.name)
+            await interaction.followup.send(embed=embed)
+
+        await run_staff_command(interaction, work, label="журнал")
 
 
 async def setup(bot: RobloxBot) -> None:

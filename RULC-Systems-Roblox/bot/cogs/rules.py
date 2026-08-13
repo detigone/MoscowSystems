@@ -7,6 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.core.checks import is_guild_admin
+from bot.db import normalize_type_key
 from bot.services.embeds import RobloxEmbedFactory, type_label
 
 if TYPE_CHECKING:
@@ -49,7 +50,7 @@ class RulesCog(commands.Cog):
             await interaction.response.send_message("Недостаточно прав.", ephemeral=True)
             return
 
-        type_key = тип.strip().lower()
+        type_key = normalize_type_key(тип)
         await self.bot.db.set_point_rule(interaction.guild.id, type_key, баллы)
         label = type_label(type_key)
         await interaction.response.send_message(

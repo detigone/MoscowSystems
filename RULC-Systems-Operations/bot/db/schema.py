@@ -186,4 +186,24 @@ CREATE INDEX IF NOT EXISTS idx_tickets_guild_opener_status
     ON tickets (guild_id, opener_id, status);
 CREATE INDEX IF NOT EXISTS idx_tickets_guild_status
     ON tickets (guild_id, status);
+
+CREATE TABLE IF NOT EXISTS mod_call_config (
+    guild_id INTEGER PRIMARY KEY,
+    channel_id INTEGER,
+    cooldown_seconds INTEGER NOT NULL DEFAULT 300,
+    enabled INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS mod_call_roles (
+    guild_id INTEGER NOT NULL,
+    role_id INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, role_id)
+);
+
+CREATE TABLE IF NOT EXISTS mod_call_cooldowns (
+    guild_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    last_called_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (guild_id, user_id)
+);
 """

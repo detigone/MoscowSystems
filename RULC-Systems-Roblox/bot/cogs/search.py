@@ -8,7 +8,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from bot.cogs.helpers import nickname_autocomplete
-from bot.services.roblox_api import fetch_roblox_user
+from bot.services.player_resolve import resolve_discord_for_roblox, resolve_roblox_player
 from bot.ui.search_view import SearchPaginationView
 
 if TYPE_CHECKING:
@@ -31,26 +31,41 @@ class SearchCog(commands.Cog):
         description="Roblox профиль и наказания игрока",
     )
     @app_commands.describe(
-        никнейм="Roblox никнейм игрока, у которого вы хотите просмотреть наказания.",
+        никнейм="Roblox никнейм (не нужен, если указан Discord)",
+        discord="Discord-участник (через Bloxlink)",
     )
     @app_commands.autocomplete(никнейм=nickname_ac)
-    async def poisk(self, interaction: discord.Interaction, никнейм: str) -> None:
+    async def poisk(
+        self,
+        interaction: discord.Interaction,
+        никнейм: str | None = None,
+        discord: discord.Member | None = None,
+    ) -> None:
         if not interaction.guild:
             await interaction.response.send_message("Только на сервере.", ephemeral=True)
             return
 
         await interaction.response.defer()
 
-        query = никнейм.strip()
-        if not self.bot.http_session:
-            await interaction.followup.send("Бот ещё не готов. Попробуйте снова.", ephemeral=True)
+        query = (никнейм or "").strip()
+        if not query and not discord:
+            await interaction.followup.send(
+                "Укажите **никнейм** или **Discord-участника**.",
+                ephemeral=True,
+            )
             return
 
         try:
-            roblox = await fetch_roblox_user(self.bot.http_session, query)
+            roblox = await resolve_roblox_player(
+                self.bot,
+                nickname=query or None,
+                discord_user=discord,
+                guild_id=interaction.guild.id,
+            )
             if not roblox:
+                label = query or (discord.display_name if discord else "?")
                 await interaction.followup.send(
-                    f"Игрок **`{query}`** не найден в Roblox.",
+                    f"Игрок **`{label}`** не найден в Roblox.",
                     ephemeral=True,
                 )
                 return
@@ -58,9 +73,21 @@ class SearchCog(commands.Cog):
             gid = interaction.guild.id
             rid = int(roblox["id"])
             total_points = await self.bot.db.sum_points(gid, rid)
+            total_records = await self.bot.db.count_punishments(gid, rid, include_revoked=True)
             punishments = await self.bot.db.list_punishments(
-                gid, rid, include_revoked=True
+                gid, rid, include_revoked=True, limit=100
             )
+            truncated = total_records > len(punishments)
+            discord_member, link_source, offserver_id = await resolve_discord_for_roblox(
+                self.bot,
+                interaction.guild,
+                rid,
+                str(roblox.get("name") or query),
+            )
+            if discord and not discord_member:
+                discord_member = discord if isinstance(discord, discord.Member) else None
+                if discord_member:
+                    link_source = "bloxlink"
         except Exception:
             logger.exception("/поиск failed for %s", query)
             await interaction.followup.send(
@@ -74,19 +101,28 @@ class SearchCog(commands.Cog):
             guild_id=gid,
             guild_name=interaction.guild.name,
             roblox=roblox,
+            roblox_id=rid,
             punishments=punishments,
             total_points=total_points,
+            total_records=total_records,
             author=interaction.user,
+            discord_member=discord_member,
+            discord_link_source=link_source,
+            discord_offserver_id=offserver_id,
+            history_note=(
+                f"Показаны последние {len(punishments)} из {total_records}"
+                if truncated
+                else None
+            ),
         )
         view._owner_id = interaction.user.id
 
-        if view.total_pages <= 1:
-            view.clear_items()
-
-        await interaction.followup.send(
-            embed=view.build_embed(),
-            view=view if view.total_pages > 1 else None,
-        )
+        await interaction.followup.send(embed=view.build_embed(), view=view)
+        try:
+            messages = await interaction.original_response()
+            view.bind_message(messages)
+        except discord.HTTPException:
+            pass
 
 
 async def setup(bot: RobloxBot) -> None:

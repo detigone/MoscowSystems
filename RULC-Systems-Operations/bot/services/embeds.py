@@ -74,8 +74,12 @@ class EmbedFactory:
         if theme.show_timestamp:
             embed.timestamp = datetime.now(timezone.utc)
         icon = theme.thumbnail_url
+        if not icon and theme.use_guild_icon and guild and guild.icon:
+            icon = guild.icon.url
         if icon:
             embed.set_thumbnail(url=icon)
+        if theme.footer_text:
+            embed.set_footer(text=theme.footer_text)
         return embed
 
     @staticmethod
@@ -282,7 +286,12 @@ class EmbedFactory:
         categories = await self.db.list_ticket_categories(guild.id)
         config = await self.db.get_ticket_config(guild.id)
 
-        lines = [f"{c['name']}" + (f" — {c['description']}" if c.get("description") else "") for c in categories]
+        lines = [
+            f"{c['emoji']} **{c['name']}**"
+            + (f" — {c['description']}" if c.get("description") else "")
+            for c in categories
+            if int(c.get("enabled", 1))
+        ]
         max_open = int(config["max_open_per_user"])
         embed = self._base(
             theme,
@@ -305,18 +314,23 @@ class EmbedFactory:
         ticket_number: int,
         category,
         opener: discord.Member,
+        user_note: str | None = None,
+        claimed_by_id: int | None = None,
     ) -> discord.Embed:
         theme = await self.theme(guild.id)
+        body = f"{opener.mention} · {category['emoji']} {category['name']}\nID `{ticket_id}`"
+        if user_note and user_note != category["name"]:
+            body += f"\n\n**Обращение:**\n{user_note[:900]}"
+        else:
+            body += "\n\nОпишите проблему, если ещё не указали."
+        if claimed_by_id:
+            body += f"\n\n✋ В работе: <@{claimed_by_id}>"
         embed = self._base(
             theme,
             guild,
             title=f"Тикет #{ticket_number}",
             color=theme.color_primary,
-            description=(
-                f"{opener.mention} · {category['name']}\n"
-                f"ID `{ticket_id}`\n\n"
-                "Опишите проблему."
-            ),
+            description=body,
         )
         return embed
 
@@ -344,6 +358,41 @@ class EmbedFactory:
                 f"{reason[:1024] or '—'}"
             ),
         )
+        return embed
+
+    async def ticket_statistics_embed(
+        self,
+        guild: discord.Guild,
+        stats: dict[str, int],
+    ) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        open_count = int(stats.get("open_count") or 0)
+        closed_count = int(stats.get("closed_count") or 0)
+        claimed = int(stats.get("claimed_open") or 0)
+        total = int(stats.get("total") or 0)
+        unclaimed = max(0, open_count - claimed)
+
+        embed = self._base(
+            theme,
+            guild,
+            title="Статистика тикетов",
+            color=theme.color_info,
+            description=(
+                f"Всего **`{total}`** · открыто **`{open_count}`** · закрыто **`{closed_count}`**"
+            ),
+        )
+        embed.add_field(
+            name="Открытые",
+            value=f"В работе: **`{claimed}`** · ожидают: **`{unclaimed}`**",
+            inline=False,
+        )
+        categories = await self.db.list_ticket_categories(guild.id, enabled_only=False)
+        if categories:
+            embed.add_field(
+                name="Темы",
+                value="\n".join(f"{c['emoji']} {c['name']}" for c in categories[:6])[:1024],
+                inline=False,
+            )
         return embed
 
     async def ticket_settings_embed(self, guild: discord.Guild) -> discord.Embed:
@@ -381,7 +430,9 @@ class EmbedFactory:
             name="Категории тикетов",
             value=(
                 "\n".join(
-                    f"`#{c['id']}` {c['emoji']} {c['name']}" for c in categories[:8]
+                    f"`#{c['id']}` {c['emoji']} {c['name']}"
+                    + (" · выкл" if not int(c.get("enabled", 1)) else "")
+                    for c in categories[:8]
                 )
                 if categories
                 else "—"
@@ -397,11 +448,158 @@ class EmbedFactory:
             inline=True,
         )
         embed.add_field(
+            name="Лимиты",
+            value=(
+                f"Открытых на человека: **`{config['max_open_per_user']}`**\n"
+                f"Автор может закрыть: **{'да' if int(config.get('opener_can_close', 1)) else 'нет'}**"
+            ),
+            inline=True,
+        )
+        idle_h = int(config.get("idle_close_hours") or 0)
+        remind_h = int(config.get("remind_unclaimed_hours") or 0)
+        embed.add_field(
+            name="Автоматизация",
+            value=(
+                f"Авто-закрытие: **{'выкл' if idle_h <= 0 else f'{idle_h} ч без активности'}**\n"
+                f"Напоминание staff: **{'выкл' if remind_h <= 0 else f'каждые {remind_h} ч'}**"
+            ),
+            inline=True,
+        )
+        embed.add_field(
             name="Шаблон имени",
             value=(
                 f"`{config['name_template']}`\n"
                 "🟢 открыт · 🟡 в работе · 🔴 закрыт\n"
                 "Пример: `・🟢・поддержка-1054`"
+            ),
+            inline=False,
+        )
+        return embed
+
+    async def ticket_audit_embed(
+        self,
+        guild: discord.Guild,
+        issues: list,
+        *,
+        report=None,
+    ) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        icons = {"ok": "✅", "warn": "⚠️", "error": "❌"}
+        lines = [f"{icons.get(i.level, '•')} {i.text}" for i in issues]
+        desc = "\n".join(lines)[:4000]
+        embed = self._base(
+            theme,
+            guild,
+            title="🔍 Проверка тикетов",
+            color=theme.color_success if all(i.level == "ok" for i in issues) else theme.color_warning,
+            description=desc or "—",
+        )
+        if report is not None:
+            actions: list[str] = []
+            if report.orphans_closed:
+                actions.append(f"Сирот закрыто: **{report.orphans_closed}**")
+            if report.idle_closed:
+                actions.append(f"Авто-закрыто: **{report.idle_closed}**")
+            if report.reminders_sent:
+                actions.append(f"Напоминаний: **{report.reminders_sent}**")
+            if report.panel_repaired:
+                actions.append("Панель восстановлена")
+            if actions:
+                embed.add_field(name="Обслуживание", value="\n".join(actions), inline=False)
+        return embed
+
+    async def ticket_list_embed(
+        self,
+        guild: discord.Guild,
+        tickets: list,
+        *,
+        status_label: str,
+    ) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        if not tickets:
+            return self._base(
+                theme,
+                guild,
+                title=f"Тикеты · {status_label}",
+                color=theme.color_info,
+                description="Нет записей.",
+            )
+        lines: list[str] = []
+        for t in tickets[:15]:
+            num = t["ticket_number"] or t["id"]
+            ch = guild.get_channel(int(t["channel_id"]))
+            ch_ref = ch.mention if ch else "`удалён`"
+            claim = f" · <@{t['claimed_by_id']}>" if t["claimed_by_id"] else ""
+            lines.append(f"**#{num}** {ch_ref} · <@{t['opener_id']}>{claim}")
+        return self._base(
+            theme,
+            guild,
+            title=f"Тикеты · {status_label}",
+            color=theme.color_info,
+            description="\n".join(lines)[:4000],
+        )
+
+    async def mod_call_embed(
+        self,
+        guild: discord.Guild,
+        *,
+        caller: discord.Member,
+        reason: str,
+        source_channel: discord.abc.GuildChannel | None = None,
+    ) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        where = source_channel.mention if source_channel else "—"
+        embed = self._base(
+            theme,
+            guild,
+            title="🚨 Вызов модератора",
+            color=theme.color_danger,
+            description=f"{caller.mention} запросил помощь модератора.",
+        )
+        embed.add_field(name="Причина", value=reason[:1024], inline=False)
+        embed.add_field(name="Канал", value=where, inline=True)
+        embed.add_field(name="Игрок", value=f"{caller} · `{caller.id}`", inline=True)
+        embed.set_footer(text="RU:LC Operations · Mod Call")
+        return embed
+
+    async def mod_call_settings_embed(self, guild: discord.Guild) -> discord.Embed:
+        theme = await self.theme(guild.id)
+        config = await self.db.get_mod_call_config(guild.id)
+        roles = await self.db.list_mod_call_roles(guild.id)
+        ch = guild.get_channel(int(config["channel_id"])) if config["channel_id"] else None
+        cooldown = int(config["cooldown_seconds"] or 0)
+        enabled = bool(int(config["enabled"]))
+        embed = self._base(
+            theme,
+            guild,
+            title="📢 Вызов модератора",
+            color=theme.color_info,
+        )
+        embed.add_field(
+            name="Статус",
+            value="✅ включён" if enabled else "⛔ выключен",
+            inline=True,
+        )
+        embed.add_field(
+            name="Канал",
+            value=ch.mention if ch else "—",
+            inline=True,
+        )
+        embed.add_field(
+            name="Кулдаун",
+            value=f"**{cooldown}** сек." if cooldown > 0 else "нет",
+            inline=True,
+        )
+        embed.add_field(
+            name="Роли для пинга",
+            value=" ".join(f"<@&{r}>" for r in roles) if roles else "—",
+            inline=False,
+        )
+        embed.add_field(
+            name="Команды",
+            value=(
+                "`/mod` или `!mod <причина>` — вызов\n"
+                "`/mod-настройка канал` · `роль` · `кулдаун`"
             ),
             inline=False,
         )
