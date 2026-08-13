@@ -1,5 +1,5 @@
 import discord
-from decouple import config
+from utils.env_helpers import custom_guild_filter_guild
 from discord.ext import commands, tasks
 
 from utils import prc_api
@@ -12,7 +12,7 @@ async def iterate_ics(bot):
     # This will aim to constantly update the Integration Command Storage
     # and the relevant storage data.
 
-    async for item in bot.ics.db.find({} if bot.environment in ["PRODUCTION", "ALPHA", "DEVELOPMENT"] else {"guild": config("CUSTOM_GUILD_ID")}):
+    async for item in bot.ics.db.find(custom_guild_filter_guild()):
         guild = bot.get_guild(item["guild"])
 
         if not guild:

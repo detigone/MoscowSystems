@@ -24,15 +24,15 @@ revoke   →  POST /internal/punishment/revoke
 ```powershell
 # 1. Roblox (internal API)
 cd F:\MoscowSystems\RULC-Systems-Roblox
-py -3 main.py
+python main.py
 
 # 2. CycleRM
 cd F:\MoscowSystems\CycleRM
-py -3 main.py
+python main.py
 
 # 3. Operations
 cd F:\MoscowSystems\RULC-Systems-Operations
-py -3 main.py
+python main.py
 ```
 
 Подробнее: README в каждой папке.

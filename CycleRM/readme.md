@@ -2,7 +2,7 @@
 
 **CycleRM** — форк [CycleRM](https://github.com/mikeywhiston/CycleRM) для сети **RU:LC Systems**.
 
-Staff-модерация: `/punish`, смены, ER:LC, infractions и остальной функционал CycleRM.
+Staff-модерация: `/punish`, смены, ER:LC и остальной функционал CycleRM.
 
 > **Баллы игроков** начисляются в **RU:LC Systems Roblox**, не здесь.  
 > После каждого `/punish` CycleRM отправляет событие в Roblox-бот.
@@ -16,7 +16,7 @@ py -3 -m venv .venv
 pip install -r requirements.txt
 copy .env.template .env
 # заполнить .env
-py -3 main.py
+python main.py
 ```
 
 ## Обязательно в `.env`

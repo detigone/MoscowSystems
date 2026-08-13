@@ -1,15 +1,19 @@
 import discord
 import logging
 
-from decouple import config
 from discord.ext import commands, tasks
 import time
 import datetime
 import pytz
+from pymongo.errors import PyMongoError
+
+from utils.env_helpers import custom_guild_id, is_custom
 
 
 @tasks.loop(minutes=10, reconnect=True)
 async def tempban_checks(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     # This will check for expired time bans
     # and for servers which have this feature enabled
     # to automatically remove the ban in-game
@@ -31,62 +35,67 @@ async def tempban_checks(bot):
 
     cached_servers = {}
     initial_time = time.time()
-    async for punishment_item in bot.punishments.db.find(
-        {
-            "Epoch": {"$gt": 1709164800},
-            "CheckExecuted": {"$exists": False},
-            "UntilEpoch": {"$lt": int(datetime.datetime.now(tz=pytz.UTC).timestamp())},
-            "Type": "Temporary Ban",
-        }
-    ):
-        try:
-            guild = bot.get_guild(punishment_item["Guild"])
-            if guild is None:
-                guild = await bot.fetch_guild(punishment_item["Guild"])
-        except discord.HTTPException:
-            continue
-
-        if not cached_servers.get(punishment_item["Guild"]):
+    query = {
+        "Epoch": {"$gt": 1709164800},
+        "CheckExecuted": {"$exists": False},
+        "UntilEpoch": {"$lt": int(datetime.datetime.now(tz=pytz.UTC).timestamp())},
+        "Type": "Temporary Ban",
+    }
+    if is_custom() and custom_guild_id():
+        query["Guild"] = custom_guild_id()
+    try:
+        async for punishment_item in bot.punishments.db.find(query):
             try:
-                cached_servers[punishment_item["Guild"]] = await bot.prc_api.fetch_bans(
-                    punishment_item["Guild"]
-                )
-            except:
+                guild = bot.get_guild(punishment_item["Guild"])
+                if guild is None:
+                    guild = await bot.fetch_guild(punishment_item["Guild"])
+            except discord.HTTPException:
                 continue
 
-        punishment_item["CheckExecuted"] = True
-        await bot.punishments.update_by_id(punishment_item)
+            if not cached_servers.get(punishment_item["Guild"]):
+                try:
+                    cached_servers[punishment_item["Guild"]] = await bot.prc_api.fetch_bans(
+                        punishment_item["Guild"]
+                    )
+                except Exception:
+                    continue
 
-        if punishment_item["UserID"] not in [
-            i.user_id for i in cached_servers[punishment_item["Guild"]]
-        ]:
-            continue
+            punishment_item["CheckExecuted"] = True
+            await bot.punishments.update_by_id(punishment_item)
 
-        sorted_punishments = sorted(
-            [
-                i
-                async for i in bot.punishments.db.find(
-                    {
-                        "UserID": punishment_item["UserID"],
-                        "Guild": punishment_item["Guild"],
-                    }
-                )
-            ],
-            key=lambda x: x["Epoch"],
-            reverse=True,
-        )
-        new_sorted_punishments = []
-        for item in sorted_punishments:
-            if item == punishment_item:
-                break
-            new_sorted_punishments.append(item)
+            if punishment_item["UserID"] not in [
+                i.user_id for i in cached_servers[punishment_item["Guild"]]
+            ]:
+                continue
 
-        if any([i["Type"] in ["Ban", "Temporary Ban"] for i in new_sorted_punishments]):
-            continue
+            sorted_punishments = sorted(
+                [
+                    i
+                    async for i in bot.punishments.db.find(
+                        {
+                            "UserID": punishment_item["UserID"],
+                            "Guild": punishment_item["Guild"],
+                        }
+                    )
+                ],
+                key=lambda x: x["Epoch"],
+                reverse=True,
+            )
+            new_sorted_punishments = []
+            for item in sorted_punishments:
+                if item == punishment_item:
+                    break
+                new_sorted_punishments.append(item)
 
-        await bot.prc_api.unban_user(
-            punishment_item["Guild"], punishment_item["user_id"]
-        )
+            if any([i["Type"] in ["Ban", "Temporary Ban"] for i in new_sorted_punishments]):
+                continue
+
+            await bot.prc_api.unban_user(
+                punishment_item["Guild"], punishment_item["user_id"]
+            )
+    except PyMongoError as exc:
+        logging.warning("tempban_checks skipped: %s", exc)
+        return
     del cached_servers
     end_time = time.time()
     logging.warning(

@@ -5,8 +5,10 @@ import time
 import discord
 from decouple import config
 from discord.ext import tasks
+from pymongo.errors import PyMongoError
 
 from utils import prc_api
+from utils.env_helpers import custom_guild_id, is_custom
 from utils.prc_api import Player, ServerStatus
 from utils.utils import fetch_get_channel
 
@@ -84,6 +86,9 @@ async def statistics_check(bot):
     """
     Statistics Check with caching and batch processing optimization.
     """
+    if not getattr(bot, "mongo_ok", True):
+        return
+
     initial_time = time.time()
     
     semaphore = asyncio.Semaphore(3)
@@ -155,16 +160,21 @@ async def statistics_check(bot):
 
     # Process guilds in batches
     guild_tasks = []
-    async for guild_data in bot.settings.db.find(
-        {"ERLC.statistics": {"$exists": True}}
-    ):
-        guild_tasks.append(process_guild(guild_data))
-        
-        # Process in batches of 5 to avoid overwhelming the system
-        if len(guild_tasks) >= 5:
-            await asyncio.gather(*guild_tasks, return_exceptions=True)
-            guild_tasks = []
-            await asyncio.sleep(1)  # Small delay between batches
+    query = {"ERLC.statistics": {"$exists": True}}
+    if is_custom() and custom_guild_id():
+        query["_id"] = custom_guild_id()
+    try:
+        async for guild_data in bot.settings.db.find(query):
+            guild_tasks.append(process_guild(guild_data))
+
+            # Process in batches of 5 to avoid overwhelming the system
+            if len(guild_tasks) >= 5:
+                await asyncio.gather(*guild_tasks, return_exceptions=True)
+                guild_tasks = []
+                await asyncio.sleep(1)  # Small delay between batches
+    except PyMongoError as exc:
+        logging.warning("statistics_check skipped: %s", exc)
+        return
     
     # Process remaining guilds
     if guild_tasks:

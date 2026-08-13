@@ -2077,7 +2077,7 @@ class MyMiddleware:
                 or request_json.get("GuildID")
             )
 
-            doc = self.bot.whitelabel.db.find_one({"GuildID": str(guild_id)})
+            doc = await self.bot.whitelabel.db.find_one({"GuildID": str(guild_id)})
             if not doc:
                 raise Exception("doc not found")
 

@@ -10,6 +10,7 @@ import discord
 
 from utils.utils import generator
 from utils.mongo import Document
+from utils.rulc_roblox import sync_punishment_revoked
 
 
 class WarningItem:
@@ -398,36 +399,66 @@ class Warnings(Document):
         # await self.recovery.db.insert_many(storage)
 
     async def remove_warning_by_snowflake(
-        self, identifier: int, guild_id: int | None = None
+        self, identifier: int, guild_id: int | None = None, revoked_by: discord.Member | None = None
     ):
         """
         Removes a warning from the database by its snowflake.
         """
 
         selected_item = await self.db.find_one({"Snowflake": identifier})
-        if selected_item["Guild"] == (guild_id or selected_item["Guild"]):
-            try:
-                url_var = config("BASE_API_URL")
-                panel_url_var = config("PANEL_API_URL")
-                if url_var not in ["", None]:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
-                            f"{url_var}/Internal/SyncDeletePunishment/{selected_item['_id']}",
-                            headers={"Authorization": config("INTERNAL_API_AUTH")},
-                        ):
-                            pass
-                if panel_url_var not in ["", None]:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(
-                            f"{panel_url_var}/{guild_id}/SyncDeletePunishment?ID={identifier}",
-                            headers={"Authorization": config("INTERNAL_API_AUTH")},
-                        ):
-                            pass
-            except ValueError:
-                pass
-            return await self.db.delete_one({"Snowflake": identifier})
-        else:
+        if not selected_item:
+            return None
+        if selected_item["Guild"] != (guild_id or selected_item["Guild"]):
             return ValueError("Warning does not exist.")
+
+        warning = WarningItem(
+            id=selected_item["_id"],
+            snowflake=selected_item["Snowflake"],
+            username=selected_item["Username"],
+            user_id=selected_item["UserID"],
+            warning_type=selected_item["Type"],
+            reason=selected_item["Reason"],
+            moderator_name=selected_item["Moderator"],
+            moderator_id=selected_item["ModeratorID"],
+            guild_id=selected_item["Guild"],
+            time_epoch=selected_item["Epoch"],
+            until_epoch=None if selected_item.get("UntilEpoch") == 0 else selected_item.get("UntilEpoch"),
+        )
+        manager = revoked_by
+        if manager is None:
+
+            class _SystemRevoker:
+                id = 0
+
+                def __str__(self):
+                    return "CycleRM"
+
+            manager = _SystemRevoker()
+        try:
+            await sync_punishment_revoked(warning, manager)
+        except Exception:
+            pass
+
+        try:
+            url_var = config("BASE_API_URL", default="")
+            panel_url_var = config("PANEL_API_URL", default="")
+            if url_var not in ["", None]:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{url_var}/Internal/SyncDeletePunishment/{selected_item['_id']}",
+                        headers={"Authorization": config("INTERNAL_API_AUTH", default="")},
+                    ):
+                        pass
+            if panel_url_var not in ["", None]:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(
+                        f"{panel_url_var}/{guild_id or selected_item['Guild']}/SyncDeletePunishment?ID={identifier}",
+                        headers={"Authorization": config("INTERNAL_API_AUTH", default="")},
+                    ):
+                        pass
+        except ValueError:
+            pass
+        return await self.db.delete_one({"Snowflake": identifier})
 
     async def count_warnings(
         self,

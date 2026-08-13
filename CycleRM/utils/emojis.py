@@ -1,9 +1,6 @@
 import os
-import asyncio
-import nest_asyncio
 
-nest_asyncio.apply()  # dangerous!
-
+# Fallback IDs from ERM application emojis (used until prefetch loads bot's own emojis).
 default_emojis = {
     "check": 1163142000271429662,
     "xmark": 1166139967920164915,
@@ -30,23 +27,27 @@ class EmojiController:
         self.emojis = {}
 
     async def prefetch_emojis(self):
-
         application_emojis = await self.bot.fetch_application_emojis()
-        for item in os.listdir("assets/emojis"):
-            if item.endswith(".png"):
-                if item.replace(".png", "") not in [i.name for i in application_emojis]:
-                    emoji_name = item.replace(".png", "")
-                    image_data = open(f"assets/emojis/{item}", "rb").read()
-                    await self.bot.create_application_emoji(
-                        name=emoji_name, image=image_data
-                    )
+        assets_dir = os.path.join(os.path.dirname(__file__), "..", "assets", "emojis")
+        assets_dir = os.path.normpath(assets_dir)
+
+        if os.path.isdir(assets_dir):
+            for item in os.listdir(assets_dir):
+                if item.endswith(".png"):
+                    if item.replace(".png", "") not in [i.name for i in application_emojis]:
+                        emoji_name = item.replace(".png", "")
+                        with open(os.path.join(assets_dir, item), "rb") as handle:
+                            image_data = handle.read()
+                        await self.bot.create_application_emoji(
+                            name=emoji_name, image=image_data
+                        )
 
         new_application_emojis = await self.bot.fetch_application_emojis()
         for emoji in new_application_emojis:
             self.emojis[emoji.name] = emoji.id
 
     def get_emoji(self, emoji_name):
-        if not self.emojis:
-            asyncio.run(self.prefetch_emojis())
-
-        return "<:{}:{}>".format(emoji_name, self.emojis[emoji_name])
+        emoji_id = self.emojis.get(emoji_name) or default_emojis.get(emoji_name)
+        if emoji_id is None:
+            return ""
+        return f"<:{emoji_name}:{emoji_id}>"

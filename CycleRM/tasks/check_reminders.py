@@ -11,6 +11,7 @@ from utils.constants import BLANK_COLOR
 import aiohttp
 from decouple import config
 
+from utils.env_helpers import custom_guild_filter_id, custom_guild_id, is_custom
 from utils.utils import has_whitelabel
 
 
@@ -55,7 +56,7 @@ async def iterate_reminder(bot, guildObj): # TODO: do a refactor of this.. this 
                 color=BLANK_COLOR,
             )
 
-            lastTriggered = next_time.timestamp()
+            lastTriggered = current_time.timestamp()
             item["lastTriggered"] = lastTriggered
             await bot.reminders.update_by_id(guildObj)
 
@@ -152,21 +153,15 @@ async def iterate_reminder(bot, guildObj): # TODO: do a refactor of this.. this 
 @tasks.loop(minutes=1)
 async def check_reminders(bot):
 
-    if bot.environment == "PRODUCTION":
-        try:
-            async for guildObj in bot.reminders.db.find({}):
-                try:
-                    await iterate_reminder(bot, guildObj)
-                except Exception as e:
-                    logging.warning(f"Reminder failed: {e}")
-        except Exception as e:
-            logging.warning(f"Reminder task failed: {e}")
-    else:
-        try:
-            async for guildObj in bot.reminders.db.find({"_id": int(config("CUSTOM_GUILD_ID"))}):
-                try:
-                    await iterate_reminder(bot, guildObj)
-                except Exception as e:
-                    logging.warning(f"Reminder failed: {e}")
-        except Exception as e:
-            logging.warning(f"Reminder task failed: {e}")
+    if not getattr(bot, "mongo_ok", True):
+        return
+
+    guild_filter = custom_guild_filter_id()
+    try:
+        async for guildObj in bot.reminders.db.find(guild_filter):
+            try:
+                await iterate_reminder(bot, guildObj)
+            except Exception as e:
+                logging.warning(f"Reminder failed: {e}")
+    except Exception as e:
+        logging.warning(f"Reminder task failed: {e}")

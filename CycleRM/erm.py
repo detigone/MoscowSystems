@@ -13,7 +13,6 @@ from datamodels.Whitelabel import Whitelabel
 from tasks.iterate_ics import iterate_ics
 from tasks.check_loa import check_loa
 from tasks.check_reminders import check_reminders
-from tasks.check_infractions import check_infractions
 from tasks.iterate_prc_logs import iterate_prc_logs
 from tasks.tempban_checks import tempban_checks
 from tasks.process_scheduled_pms import process_scheduled_pms
@@ -30,6 +29,7 @@ from utils.emojis import EmojiController
 from utils.log_tracker import LogTracker
 from utils.mc_api import MCApiClient
 from utils.mongo import Document
+from utils.mongo_client import mongo_client_kwargs
 
 import aiohttp
 import decouple
@@ -128,6 +128,9 @@ class Bot(commands.AutoShardedBot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setup_status: bool = False
+        self.reminders_enabled = True
+        self.actions_enabled = True
+        self.external_http_sessions: list = []
         self._member_cache = {}
         self._guild_cache = {}
         self._cache_timeout = 300
@@ -157,24 +160,37 @@ class Bot(commands.AutoShardedBot):
         self.view_state_manager: ViewStateManager = ViewStateManager()
 
         if not self.setup_status:
-            # await bot.load_extension('utils.routes')
-            logging.info(
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━���━━━━━━\n\n{} is online!".format(
-                    self.user.name
+            if not mongo_url or not str(mongo_url).strip():
+                logging.critical(
+                    "MONGO_URL is empty. Set it in .env (see .env.template). "
+                    "Run: python scripts/check_mongo.py"
                 )
+                raise RuntimeError("MONGO_URL is not configured")
+
+            self.mongo = motor.motor_asyncio.AsyncIOMotorClient(
+                str(mongo_url), **mongo_client_kwargs()
             )
-            self.mongo = motor.motor_asyncio.AsyncIOMotorClient(str(mongo_url))
-            if environment == "DEVELOPMENT":
-                self.db = self.mongo["erm"]
-            elif environment == "PRODUCTION":
-                self.db = self.mongo["erm"]
-            elif environment == "ALPHA":
-                self.db = self.mongo["erm"]
-            elif environment == "CUSTOM":
-                self.db = self.mongo["erm"]
-            else:
-                raise Exception("Invalid environment")
-            
+            mongo_db_name = config("MONGO_DB_NAME", default="erm")
+            self.db = self.mongo[mongo_db_name]
+
+            self.mongo_ok = False
+            for attempt in range(1, 4):
+                try:
+                    await self.mongo.admin.command("ping")
+                    self.mongo_ok = True
+                    break
+                except Exception as exc:
+                    logging.warning(
+                        "MongoDB ping attempt %s/3 failed: %s", attempt, exc
+                    )
+                    if attempt < 3:
+                        await asyncio.sleep(5)
+
+            if not self.mongo_ok:
+                logging.critical(
+                    "MongoDB unreachable. Whitelist your IP in Atlas -> Network Access "
+                    "(run: python scripts/check_mongo.py). Bot starts in degraded mode."
+                )
 
 
             self.panel_db = self.mongo["UserIdentity"]
@@ -205,6 +221,7 @@ class Bot(commands.AutoShardedBot):
             self.consent = Consent(self.db, "consent")
             self.punishments = Warnings(self)
             self.settings = Settings(self.db, "settings")
+            self.privacy = Document(self.db, "privacy")
             self.server_keys = ServerKeys(self.db, "server_keys")
 
             self.maple_county = self.mongo["MapleCounty"]
@@ -222,13 +239,6 @@ class Bot(commands.AutoShardedBot):
 
             self.accounts = Accounts(self)
 
-            if environment == "CUSTOM":
-                doc = await self.whitelabel.db.find_one({"GuildID": config("CUSTOM_GUILD_ID", default="0")})
-                if not doc:
-                    raise Exception(
-                        "Custom guild ID not found in the database. This means the whitelabel subscription is overdue."
-                    )
-
             self.roblox = roblox.Client()
             self.prc_api = PRCApiClient(
                 self,
@@ -238,14 +248,15 @@ class Bot(commands.AutoShardedBot):
                 api_key=config("PRC_API_KEY", default="default_api_key"),
             )
             self.mc_api = MCApiClient(
-                self, base_url=config("MC_API_URL"), api_key=config("MC_API_KEY")
+                self,
+                base_url=config("MC_API_URL", default=""),
+                api_key=config("MC_API_KEY", default=""),
             )
-            self.bloxlink = Bloxlink(self, config("BLOXLINK_API_KEY"))
+            self.bloxlink = Bloxlink(self, config("BLOXLINK_API_KEY", default=""))
 
             Extensions = [m.name for m in iter_modules(["cogs"], prefix="cogs.")]
             Events = [m.name for m in iter_modules(["events"], prefix="events.")]
-            BETA_EXT = ["cogs.StaffConduct"]
-            EXTERNAL_EXT = ["utils.api"]
+            EXTERNAL_EXT = [] if environment == "CUSTOM" else ["utils.api"]
             [Extensions.append(i) for i in EXTERNAL_EXT]
             if config("ACTIONS_ENABLED", default="TRUE").upper() != "TRUE":
                 self.actions_enabled = False
@@ -264,12 +275,8 @@ class Bot(commands.AutoShardedBot):
 
             for extension in Extensions:
                 try:
-                    if extension not in BETA_EXT:
-                        await self.load_extension(extension)
-                        logging.info(f"Loaded {extension}")
-                    elif environment == "DEVELOPMENT" or environment == "ALPHA":
-                        await self.load_extension(extension)
-                        logging.info(f"Loaded {extension}")
+                    await self.load_extension(extension)
+                    logging.info(f"Loaded {extension}")
                 except Exception as e:
                     logging.error(f"Failed to load extension {extension}.", exc_info=e)
 
@@ -281,7 +288,15 @@ class Bot(commands.AutoShardedBot):
                     logging.error(f"Failed to load extension {extension}.", exc_info=e)
 
             bot.error_list = []
-            logging.info("Connected to MongoDB!")
+            logging.info(
+                "Connected to MongoDB (%s)%s",
+                mongo_db_name,
+                "" if self.mongo_ok else " [DEGRADED — ping failed]",
+            )
+            logging.info(
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n%s is online!",
+                self.user.name,
+            )
             if configured():
                 logging.info("RU:LC Roblox sync enabled → %s", RULC_ROBLOX_URL)
             else:
@@ -297,29 +312,37 @@ class Bot(commands.AutoShardedBot):
                 pass
                 # await bot.tree.sync(guild=discord.Object(id=987798554972143728))
             elif environment == "CUSTOM":
-                await self.tree.sync()
-                # Prevent auto syncing
-                # await bot.tree.sync()
-                # guild specific: leave blank if global (global registration can take 1-24 hours)
+                guild_id = int(config("CUSTOM_GUILD_ID", default="0"))
+                if guild_id:
+                    self.tree.copy_global_to(guild=discord.Object(id=guild_id))
+                    await self.tree.sync(guild=discord.Object(id=guild_id))
+                else:
+                    await self.tree.sync()
             bot.is_synced = True
 
             # we do this so the bot can get a cache of things before we spam discord with fetches
             asyncio.create_task(self.start_tasks())
-            
-            async for document in self.views.db.find({}):
-                if document["view_type"] == "LOAMenu":
-                    for index, item in enumerate(document["args"]):
-                        if item == "SELF":
-                            document["args"][index] = self
-                    loa_id = document["args"][3]
-                    if isinstance(loa_id, dict):
-                        loa_expiry = loa_id["expiry"]
-                        if loa_expiry < datetime.datetime.now().timestamp():
-                            await self.views.delete_by_id(document["_id"])
-                            continue
-                    self.add_view(
-                        LOAMenu(*document["args"]), message_id=document["message_id"]
-                    )
+
+            try:
+                async for document in self.views.db.find({}):
+                    if document["view_type"] == "LOAMenu":
+                        for index, item in enumerate(document["args"]):
+                            if item == "SELF":
+                                document["args"][index] = self
+                        loa_id = document["args"][3]
+                        if isinstance(loa_id, dict):
+                            loa_expiry = loa_id["expiry"]
+                            if loa_expiry < datetime.datetime.now().timestamp():
+                                await self.views.delete_by_id(document["_id"])
+                                continue
+                        self.add_view(
+                            LOAMenu(*document["args"]), message_id=document["message_id"]
+                        )
+            except Exception:
+                logging.warning(
+                    "Could not restore persisted views (empty DB or MongoDB unavailable)",
+                    exc_info=True,
+                )
             self.setup_status = True
 
     async def start_tasks(self):
@@ -363,9 +386,6 @@ class Bot(commands.AutoShardedBot):
             logging.info("Starting the Iterate Conditions task...")
         else:
             logging.info("Actions task is disabled (ACTIONS_ENABLED=FALSE)")
-        await asyncio.sleep(30)
-        check_infractions.start(bot)
-        logging.info("Starting the Check Infractions task...")
         await asyncio.sleep(30)
         prc_automations.start(bot)
         logging.info("Starting the ER:LC Discord Checks task...")
@@ -425,7 +445,12 @@ async def AutoDefer(ctx: commands.Context):
                 raise Exception(f"Guild not permitted to use this bot: {ctx.guild.id}")
 
     guild_id = ctx.guild.id
-    if (environment != "CUSTOM" or int(config("CUSTOM_GUILD_ID", default="0")) != guild_id) and await has_whitelabel(bot, guild_id):
+    try:
+        whitelabel_present = await has_whitelabel(bot, guild_id)
+    except Exception:
+        logging.warning("Whitelabel check failed for guild %s", guild_id)
+        whitelabel_present = False
+    if (environment != "CUSTOM" or int(config("CUSTOM_GUILD_ID", default="0")) != guild_id) and whitelabel_present:
         if "jishaku" in ctx.command.qualified_name:
             return
         if ctx.interaction:
@@ -482,12 +507,13 @@ async def on_message(
     if not message.guild:
         return await bot.process_commands(message)
 
+    custom_gid = int(config("CUSTOM_GUILD_ID", default="0") or "0")
     if (
         environment == "CUSTOM"
-        and config("CUSTOM_GUILD_ID", default=None) != 0
+        and custom_gid != 0
         and not getattr(bot, "whitelist_disabled", False)
     ):
-        if message.guild.id != int(config("CUSTOM_GUILD_ID")):
+        if message.guild.id != custom_gid:
             ctx = await bot.get_context(message)
             if ctx.command is not None:
                 await message.reply(
@@ -499,8 +525,12 @@ async def on_message(
                 )
                 return
 
-    if environment == "PRODUCTION" and await bot.whitelabel.db.find_one({"GuildID": str(message.guild.id)}) is not None:
-        return
+    if environment == "PRODUCTION":
+        try:
+            if await bot.whitelabel.db.find_one({"GuildID": str(message.guild.id)}) is not None:
+                return
+        except Exception:
+            logging.warning("Whitelabel lookup failed in on_message")
 
     await bot.process_commands(message)
 

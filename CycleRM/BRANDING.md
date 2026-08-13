@@ -82,4 +82,4 @@ EMOJI_HELP=<:CycleRMHelp:1234567890>
 
 ### Thumbnail в embed (Staff Conduct)
 
-В `cogs/StaffConduct.py` была ссылка на CDN emoji ERM. После rebrand thumbnail убран; при желании поставь URL своей картинки в `embed.set_thumbnail(url="...")`.
+После rebrand hardcoded CDN emoji ERM убраны; при желании поставь URL своей картинки в `embed.set_thumbnail(url="...")`.

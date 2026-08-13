@@ -20,7 +20,7 @@ CycleRM шлёт наказания сюда — баллы начисляютс
 cd RULC-Systems-Roblox
 py -3 -m pip install -r requirements.txt
 copy .env.example .env
-py -3 main.py
+python main.py
 ```
 
 В CycleRM `.env`:

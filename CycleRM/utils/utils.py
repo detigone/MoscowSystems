@@ -14,6 +14,7 @@ import roblox.users
 from discord import Embed, InteractionResponse, Webhook
 from discord.ext import commands
 from fuzzywuzzy import fuzz
+from pymongo.errors import PyMongoError
 from snowflake import SnowflakeGenerator
 from zuid import ZUID
 
@@ -86,9 +87,22 @@ async def generalised_interaction_check_failure(
 
 
 async def has_whitelabel(bot, guild_id: int) -> bool:
-    if (item := await bot.whitelabel.db.find_one({"GuildID": str(guild_id)})) is not None and config("ENVIRONMENT") not in ["ALPHA", "DEVELOPMENT"]:
-        guild = bot.get_guild(guild_id)
-        token = item.get("Token")
+    if config("ENVIRONMENT") in ["ALPHA", "DEVELOPMENT", "CUSTOM"]:
+        return False
+    try:
+        item = await bot.whitelabel.db.find_one({"GuildID": str(guild_id)})
+    except PyMongoError:
+        logging.warning("Whitelabel lookup failed for guild %s", guild_id)
+        return False
+    if item is None:
+        return False
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        return False
+    token = item.get("Token")
+    if not token or "." not in token:
+        return False
+    try:
         b64_userid = token.split(".")[0]
         user_id = base64.b64decode(b64_userid + "==").decode("utf-8")
         member = guild.get_member(int(user_id))
@@ -97,8 +111,9 @@ async def has_whitelabel(bot, guild_id: int) -> bool:
                 member = await guild.fetch_member(int(user_id))
             except discord.NotFound:
                 return False
-        return True
-    return False
+        return member is not None
+    except (ValueError, UnicodeDecodeError):
+        return False
 
 async def get_roblox_by_username(user: str, bot, ctx: commands.Context):
     if "<@" in user:
@@ -420,9 +435,15 @@ async def get_prefix(bot, message):
     if not message.guild:
         return commands.when_mentioned_or(">")(bot, message)
 
+    if not getattr(bot, "mongo_ok", True):
+        return commands.when_mentioned_or(">")(bot, message)
+
     try:
         prefix = await bot.settings.find_by_id(message.guild.id)
         prefix = (prefix or {})["customisation"]["prefix"]
+    except PyMongoError:
+        logging.warning("MongoDB unavailable — using default prefix for guild %s", message.guild.id)
+        return commands.when_mentioned_or(">")(bot, message)
     except KeyError:
         return discord.ext.commands.when_mentioned_or(">")(bot, message)
 

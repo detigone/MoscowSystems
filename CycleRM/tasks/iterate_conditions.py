@@ -5,7 +5,7 @@ from functools import lru_cache
 from collections import defaultdict
 
 import discord
-from decouple import config
+from utils.env_helpers import custom_guild_id, is_custom
 from discord.ext import commands, tasks
 from discord.ext.commands.view import StringView
 
@@ -115,8 +115,10 @@ async def handle_erm_condition(bot, guild_id, condition) -> bool:
     return handle_comparison_operations(*values, condition["Operation"])
 
 
-@tasks.loop(minutes=1)
+@tasks.loop(minutes=1, reconnect=True)
 async def iterate_conditions(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     _evict_guild_cache()
     semaphore = asyncio.Semaphore(5)
     async def process_action(action):
@@ -209,12 +211,15 @@ async def iterate_conditions(bot):
             except Exception as e:
                 logging.warning(f"Failed to initialise execution of condition: {e}")
 
-    actions = [
-        i
-        async for i in bot.actions.db.find(
-            {"Conditions": {"$exists": True, "$ne": []}}
-        )
-    ]
+    action_query = {"Conditions": {"$exists": True, "$ne": []}}
+    if is_custom() and custom_guild_id():
+        action_query["Guild"] = custom_guild_id()
+
+    try:
+        actions = [i async for i in bot.actions.db.find(action_query)]
+    except Exception as exc:
+        logging.warning("iterate_conditions skipped: %s", exc)
+        return
     
     batch_size = 10
     for i in range(0, len(actions), batch_size):

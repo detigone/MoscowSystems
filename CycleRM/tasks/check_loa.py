@@ -1,12 +1,14 @@
 import datetime
 import asyncio
+import logging
 from collections import defaultdict
 
 import discord
-from decouple import config
 from discord.ext import commands, tasks
+from pymongo.errors import PyMongoError
 
 from utils.constants import RED_COLOR, BLANK_COLOR
+from utils.env_helpers import custom_guild_id, is_custom
 
 _member_cache = defaultdict(dict)
 _member_cache_timeout = 300
@@ -47,13 +49,20 @@ async def get_cached_member(guild, user_id):
 
 @tasks.loop(minutes=1, reconnect=True)
 async def check_loa(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     _evict_member_cache()
     try:
         guild_loas = defaultdict(list)
 
-        async for loaObject in bot.loas.db.find(
-            {"expired": False, "expiry": {"$lt": datetime.datetime.now().timestamp()}}
-        ):
+        loa_query = {
+            "expired": False,
+            "expiry": {"$lt": datetime.datetime.now().timestamp()},
+        }
+        if is_custom() and custom_guild_id():
+            loa_query["guild_id"] = custom_guild_id()
+
+        async for loaObject in bot.loas.db.find(loa_query):
             guild_loas[loaObject["guild_id"]].append(loaObject)
 
         for guild_id, loas in guild_loas.items():
@@ -100,6 +109,8 @@ async def check_loa(bot):
 
     except ValueError:
         pass
+    except PyMongoError as exc:
+        logging.warning("check_loa skipped: %s", exc)
 
 
 async def process_loa(bot, guild, loaObject, settings, roles):

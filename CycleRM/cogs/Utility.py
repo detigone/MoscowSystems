@@ -410,7 +410,7 @@ class Utility(commands.Cog):
             color=BLANK_COLOR,
             description=(
                 "CycleRM — staff-модерация для сети **RU:LC Systems**. "
-                "Форк ERM: `/punish`, смены, ER:LC, infractions.\n\n"
+                "Форк ERM: `/punish`, смены, ER:LC.\n\n"
                 "Баллы игроков — в **RU:LC Systems Roblox** (`/поиск`)."
             ),
         )

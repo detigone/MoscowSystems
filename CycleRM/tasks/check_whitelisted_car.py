@@ -11,6 +11,7 @@ import roblox
 from collections import defaultdict
 
 from utils.constants import RED_COLOR, BLANK_COLOR
+from utils.env_helpers import custom_guild_id, is_custom
 from utils.prc_api import Player
 from utils import prc_api
 from utils.utils import is_whitelisted, run_command
@@ -39,11 +40,15 @@ def _evict_caches():
 
 @tasks.loop(minutes=10, reconnect=True)
 async def check_whitelisted_car(bot):
+    if not getattr(bot, "mongo_ok", True):
+        return
     _evict_caches()
     initial_time = time.time()
     logging.info("Starting check_whitelisted_car task")
 
     base = {"ERLC.vehicle_restrictions.enabled": True}
+    if is_custom() and custom_guild_id():
+        base["_id"] = custom_guild_id()
     pipeline = [
         {"$match": base},
         {

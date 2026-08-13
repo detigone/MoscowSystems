@@ -94,6 +94,8 @@ async def unprimitive_guild_process(items, bot):
         items["_id"]
     )
     settings = await bot.settings.find_by_id(guild.id)
+    if not settings:
+        return
     erlc_settings = settings.get("ERLC", {})
 
     if await has_whitelabel(bot, guild.id) and not config("CUSTOM_GUILD_ID") == str(guild.id):

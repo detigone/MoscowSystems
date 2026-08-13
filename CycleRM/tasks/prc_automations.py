@@ -9,6 +9,7 @@ import datetime
 import pytz
 
 from utils.constants import BLANK_COLOR
+from utils.env_helpers import custom_guild_id, is_custom
 
 
 _guild_cache = {}
@@ -199,9 +200,13 @@ async def prc_automations(bot):
     """
     Automated Discord Checks for PRC Servers.
     """
+    if not getattr(bot, "mongo_ok", True):
+        return
     initial_time = time.time()
 
     base = {"ERLC": {"$exists": True, "$ne": None}}
+    if is_custom() and custom_guild_id():
+        base["_id"] = custom_guild_id()
     pipeline = [
         {"$match": base},
         {

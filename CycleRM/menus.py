@@ -122,7 +122,7 @@ class Dropdown(discord.ui.Select):
             discord.SelectOption(
                 label="Punishments",
                 value="punishments",
-                description="Punishing community members for rule infractions",
+                description="Punishing community members for rule violations",
             ),
             discord.SelectOption(
                 label="Moderation Sync",
@@ -12080,7 +12080,7 @@ class PunishmentModifier(discord.ui.View):
         punishment = await self.bot.punishments.db.find_one(self.root_dataset)
         if punishment:
             await self.bot.punishments.remove_warning_by_snowflake(
-                punishment["Snowflake"]
+                punishment["Snowflake"], revoked_by=interaction.user
             )
             await interaction.message.delete()
             await interaction.response.send_message(

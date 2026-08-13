@@ -9,7 +9,7 @@ from erm import Bot
 from menus import CustomSelectMenu
 from utils.constants import blank_color
 import asyncio
-import nest_asyncio
+import typing
 
 
 class CustomPage:

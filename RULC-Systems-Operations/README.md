@@ -64,7 +64,7 @@ RULC-Systems-Operations/
 ```powershell
 copy .env.example .env
 py -3 -m pip install -r requirements.txt
-py -3 main.py
+python main.py
 ```
 
 ## Переменные окружения
@@ -86,7 +86,7 @@ py -3 main.py
 - Папка `data/` в репозитории есть, сам `.db` в git не попадает (см. `.gitignore`)
 - Путь можно переопределить в `.env` через `DATABASE_PATH`
 
-При старте в логах будет строка вида: `Local database: F:\...\role-sync-bot\data\bot.db`
+При старте в логах будет строка вида: `Local database: .../RULC-Systems-Operations/data/bot.db`
 
 ## Intents и права
 
